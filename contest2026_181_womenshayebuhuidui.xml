@@ -10,6 +10,7 @@
 
   <project path="contest2026_181_womenshayebuhuidui" name="contest2026_181_womenshayebuhuidui">
     <linkfile src="app/hello_app" dest="packages/demos/contest2026_181_hello_app"/>
+    <linkfile src="app/ai_agent" dest="packages/demos/contest2026_181_ai_agent"/>
     <linkfile src="quickapp/hello_quickapp" dest="packages/apps/contest2026_181_hello_quickapp"/>
     <linkfile src="board/contest_board" dest="vendor/openvela/boards/contest2026_181_board"/>
   </project>

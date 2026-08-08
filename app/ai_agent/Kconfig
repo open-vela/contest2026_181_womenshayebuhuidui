@@ -1,0 +1,31 @@
+# Menuconfig for AI Agent
+
+config EXAMPLES_AI_AGENT
+	bool "AI Agent Application"
+	default n
+	depends on GRAPHICS_LVGL
+	---help---
+		Enable the AI Agent application with LVGL display support.
+
+if EXAMPLES_AI_AGENT
+
+config EXAMPLES_AI_AGENT_PROGNAME
+	string "Program name"
+	default "ai_agent"
+	---help---
+		This is the name of the program that will be used when the NSH ELF
+		program is installed.
+
+config EXAMPLES_AI_AGENT_STACKSIZE
+	int "AI Agent stack size"
+	default 32768
+	---help---
+		The stack size for the AI Agent task (needs more for LVGL).
+
+config EXAMPLES_AI_AGENT_PRIORITY
+	int "AI Agent priority"
+	default 100
+	---help---
+		The priority of the AI Agent task.
+
+endif # EXAMPLES_AI_AGENT
