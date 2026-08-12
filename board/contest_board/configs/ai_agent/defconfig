@@ -267,6 +267,11 @@ CONFIG_BT_GATT_SERVICE_CHANGED=y
 CONFIG_BT_ATT_OVER_BR=y
 # bttool for direct stack verification (bisect experiment)
 CONFIG_BLUETOOTH_TOOLS=y
+# Connection slots: BT_MAX_CONN=1 leaves no free slot once the
+# connectable-adv conn object is reserved, so the phone GATT connect
+# never completes (App times out after ~30s). GATT_CLIENT=y layout is
+# stable, official Gemini-S1 uses 5.
+CONFIG_BT_MAX_CONN=2
 # LE advertising (device discovery from the phone)
 CONFIG_BLUETOOTH_BLE_ADV=y
 # SPP/RFCOMM kept for compilation (ble_net.c has no #ifdef guards);
