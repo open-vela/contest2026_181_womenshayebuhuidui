@@ -32,6 +32,10 @@ if(CONFIG_EXAMPLES_AI_AGENT)
     DEPENDS
     lvgl
     SRCS
-    ai_agent_main.c)
+    ai_agent_main.c
+    ui/launcher_page.c
+    ui/pet_page.c
+    ui/settings_page.c
+    ui/ui.c)
 
 endif()

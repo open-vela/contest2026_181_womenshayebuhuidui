@@ -18,6 +18,7 @@
 
 | 阶段 | 状态 | 结论 |
 |---|---|---|
+| 蓝牙全链路深度诊断（HCI 实证/fault 定位/LCPU 缺陷） | [已验证] | 见 [`11_bt_full_diagnosis.md`](11_bt_full_diagnosis.md)：BREDR 命令链真实存在、Write_Scan_Enable 被驱动模拟、bluetoothd 布局敏感堆损坏（PRECISERR@0x00100121）、ext adv 假成功（LCPU 固件缺陷）、GATT=y 为崩溃诱因 |
 | AI 对话日志导出 | [已验证] | 已导出到 `logs/Sen70s`，manifest 中会话健康状态为 `ok` |
 | USB/串口连接 | [部分验证] | 重新枚举后成功使用 `/dev/ttyACM0` |
 | 固件构建 | [已验证] | 当前配置启用 `CONFIG_EXAMPLES_AI_AGENT=y` |
@@ -53,4 +54,5 @@
 - [`07_qemu_aiagent_llm_validation.md`](07_qemu_aiagent_llm_validation.md)：QEMU 环境 AI Agent 全链路验证（网络/LLM 对话/cron/REST API/skill）。
 - [`08_ble_spp_tun_real_device.md`](08_ble_spp_tun_real_device.md)：SF32LB52 真机蓝牙 SPP+TUN 代理链路验证（架构、配置、六层根因排障）。
 - [`09_app_spp_tun_integration.md`](09_app_spp_tun_integration.md)：手机 App 蓝牙代理联网规划——**SPP 方案否决（LCPU 固件无 BREDR）→ BLE GATT NUS 透传转向**（决策记录、新架构、里程碑）。
+- [`11_bt_full_diagnosis.md`](11_bt_full_diagnosis.md)：蓝牙全链路深度诊断（2026-08-12）——HCI 实证、fault 寄存器定位、广播 enable 缺失根因、LCPU 固件缺陷确认与 HCPU 侧待办实验。
 - [`10_pan_route_reanalysis.md`](10_pan_route_reanalysis.md)：PAN 路线重新分析——**BREDR 误判纠正**（芯片支持双模、官方栈为 ZBLUE）、PAN 官方未实现证据（dev 分支核实）、**冗余代码清单**（~2900/3400 行）、未记录事件补录。
