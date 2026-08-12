@@ -57,7 +57,6 @@ CONFIG_BSP_USING_UART2=y
 CONFIG_BT=y
 CONFIG_BT_CLASSIC=y
 CONFIG_BT_DEVICE_NAME_DYNAMIC=y
-CONFIG_BT_GATT_CLIENT=y
 CONFIG_BT_GATT_DYNAMIC_DB=y
 CONFIG_BT_H4=y
 CONFIG_BT_POWER_MODE_CONTROL=y
@@ -230,6 +229,14 @@ CONFIG_BT_DEVICE_NAME="Agent-Watch"
 CONFIG_BT_BUF_ACL_TX_COUNT=5
 CONFIG_BT_BUF_ACL_RX_COUNT_EXTRA=5
 CONFIG_BT_ATT_TX_COUNT=5
+# Legacy advertising commands (0x2006/0x2008/0x200A): SF32LB52 LCPU firmware
+# reports success on ext adv (0x2039) but transmits nothing. Aligned with the
+# official Gemini-S1 ai_agent defconfig (BT_EXT_ADV_LEGACY_SUPPORT=y).
+# Explicit BT_EXT_ADV=y (implicitly selected via BT_CLASSIC chain today):
+# LEGACY_SUPPORT lives inside the BT_EXT_ADV if-block, so keep it explicit.
+CONFIG_BT_EXT_ADV=y
+CONFIG_BT_EXT_ADV_LEGACY_SUPPORT=y
+CONFIG_BT_EXT_ADV_MAX_ADV_SET=2
 
 # Bluetooth framework + SPP for BLE network proxy (no Wi-Fi on SF32LB52)
 CONFIG_LIBUV=y
@@ -249,7 +256,10 @@ CONFIG_BLUETOOTH_GATT_SERVER=y
 # CONFIG_BLUETOOTH_GATT_CLIENT is not set
 CONFIG_BLUETOOTH_GATTS_MAX_ATTRIBUTE_NUM=24
 CONFIG_BT_GATT_SERVER=y
-# CONFIG_BT_GATT_CLIENT is not set (g_gatt_client pool is ~150KB)
+# CONFIG_BT_GATT_CLIENT is not set
+# NOTE: the "is not set" line above MUST stay clean (no trailing comment),
+# otherwise Kconfig treats the whole line as a comment and the client
+# (g_gatt_client pool ~150KB) silently stays enabled.
 # SERVICE_CHANGED is required by BT_GATT_DYNAMIC_DB (GATT server needs it)
 CONFIG_BT_GATT_SERVICE_CHANGED=y
 # CONFIG_BT_GATT_ENFORCE_SUBSCRIPTION is not set
@@ -280,3 +290,6 @@ CONFIG_AI_AGENT_NET_RPMSG=y
 # Chinese font support for display
 CONFIG_LV_FONT_SIMSUN_16_CJK=y
 CONFIG_LV_FONT_DEFAULT_SIMSUN_16_CJK=y
+# Launcher desktop pages need montserrat sizes (simsun is 16px only)
+CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
