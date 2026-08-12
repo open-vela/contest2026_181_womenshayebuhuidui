@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.0",
+  "team_id": "contest2026_181_womenshayebuhuidui",
+  "github_login": "Sen70s",
+  "generator": "claude-code-collector@1.2.0",
+  "updated_at": "2026-08-10T15:30:11.515Z",
+  "sessions": [
+    {
+      "session_id": "ffa73403-f2c6-48d4-b6ab-d16ede1bb8d1",
+      "tool": "claude-code",
+      "started_at": "2026-08-08T07:23:36.991Z",
+      "last_event_at": "2026-08-08T15:57:47.331Z",
+      "event_count": 125,
+      "raw_event_count": 182,
+      "file_path": "logs/Sen70s/2026-08-08/claude-code__ffa73403-f2c6-48d4-b6ab-d16ede1bb8d1.jsonl",
+      "collection_mode": "cli",
+      "health": "ok",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "session_id": "fae95df3-192f-465c-baeb-9e64a1a6e1d1",
+      "tool": "claude-code",
+      "started_at": "2026-08-08T08:12:37.343Z",
+      "last_event_at": "2026-08-08T08:26:10.386Z",
+      "event_count": 29,
+      "raw_event_count": 58,
+      "file_path": "logs/Sen70s/2026-08-08/claude-code__fae95df3-192f-465c-baeb-9e64a1a6e1d1.jsonl",
+      "collection_mode": "cli",
+      "health": "ok",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "session_id": "26e7942b-8cfb-4455-80d4-9eea51c300e5",
+      "tool": "claude-code",
+      "started_at": "2026-08-08T08:29:59.169Z",
+      "last_event_at": "2026-08-08T08:38:20.562Z",
+      "event_count": 15,
+      "raw_event_count": 29,
+      "file_path": "logs/Sen70s/2026-08-08/claude-code__26e7942b-8cfb-4455-80d4-9eea51c300e5.jsonl",
+      "collection_mode": "cli",
+      "health": "ok",
+      "model": "gpt-5.6-sol"
+    },
+    {
+      "session_id": "f9ce5e2a-861c-4f29-be8c-b3ed2c21ce77",
+      "tool": "claude-code",
+      "started_at": "2026-08-08T08:44:49.596Z",
+      "last_event_at": "2026-08-09T15:56:11.578Z",
+      "event_count": 244,
+      "raw_event_count": 604,
+      "file_path": "logs/Sen70s/2026-08-09/claude-code__f9ce5e2a-861c-4f29-be8c-b3ed2c21ce77.jsonl",
+      "collection_mode": "cli",
+      "health": "ok",
+      "model": "gpt-5.6-sol",
+      "redacted_count_total": 1
+    },
+    {
+      "session_id": "9c34d506-a09e-43c0-af8c-46ac671e8bc6",
+      "tool": "claude-code",
+      "started_at": "2026-08-10T13:07:53.043Z",
+      "last_event_at": "2026-08-10T15:30:11.508Z",
+      "event_count": 35,
+      "raw_event_count": 116,
+      "file_path": "logs/Sen70s/2026-08-10/claude-code__9c34d506-a09e-43c0-af8c-46ac671e8bc6.jsonl",
+      "collection_mode": "cli",
+      "health": "ok",
+      "redacted_count_total": 1
+    }
+  ]
+}
