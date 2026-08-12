@@ -256,15 +256,17 @@ CONFIG_BLUETOOTH_GATT_SERVER=y
 # CONFIG_BLUETOOTH_GATT_CLIENT is not set
 CONFIG_BLUETOOTH_GATTS_MAX_ATTRIBUTE_NUM=24
 CONFIG_BT_GATT_SERVER=y
-# CONFIG_BT_GATT_CLIENT is not set
-# NOTE: the "is not set" line above MUST stay clean (no trailing comment),
-# otherwise Kconfig treats the whole line as a comment and the client
-# (g_gatt_client pool ~150KB) silently stays enabled.
+# BISECT(verify): restore GATT_CLIENT=y — closing it changed the .bss
+# layout and the pre-existing heap corruption now crashes the voice/LVGL
+# init path. Keep it enabled until the overflow source is found.
+CONFIG_BT_GATT_CLIENT=y
 # SERVICE_CHANGED is required by BT_GATT_DYNAMIC_DB (GATT server needs it)
 CONFIG_BT_GATT_SERVICE_CHANGED=y
 # CONFIG_BT_GATT_ENFORCE_SUBSCRIPTION is not set
 # CONFIG_BT_GATT_AUTO_SEC_REQ is not set
 CONFIG_BT_ATT_OVER_BR=y
+# bttool for direct stack verification (bisect experiment)
+CONFIG_BLUETOOTH_TOOLS=y
 # LE advertising (device discovery from the phone)
 CONFIG_BLUETOOTH_BLE_ADV=y
 # SPP/RFCOMM kept for compilation (ble_net.c has no #ifdef guards);
@@ -282,6 +284,9 @@ CONFIG_EXAMPLES_AI_AGENT_VELA_SHELL_FULL=y
 # CONFIG_AI_AGENT_NODE is not set
 # CONFIG_AI_AGENT_MCP is not set
 CONFIG_AI_AGENT_LVGL_UI=y
+# TEMP(isolate bt verify): disable LVGL UI to avoid the layout-sensitive
+# heap-corruption crash seen during voice/LVGL init on this build.
+# CONFIG_AI_AGENT_LVGL_UI is not set
 # BLE GATT NUS channel is the data path (LCPU firmware has no BREDR/SPP)
 # CONFIG_AI_AGENT_BLE_NET is not set
 CONFIG_AI_AGENT_BLE_GATT=y
