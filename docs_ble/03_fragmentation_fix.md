@@ -35,6 +35,16 @@
 - 新增 onMtuChanged 记录协商 MTU；sendFrame 按 max(20, MTU-3) 分片。
 - 协商失败自动回退 20B 分片（兼容不支持的从机）。
 
+### 缺陷 C（同轮发现）：TUN 没有默认路由，公网流量不可达
+
+- 位置：ble_gatt_net.c tun_set_up() 只设置 IP/掩码并 ifup，从未添加默认路由。
+- 后果：设备只能到达 192.168.55.0/24（手机），ping 8.8.8.8 / DNS / HTTPS 全部
+  "unroutable" — 代理链路形同虚设。
+- 修复：tun_set_up(true) 时经 SIOCADDRT（libc addroute）添加
+  0.0.0.0/0 → 192.168.55.1 默认路由；down 时 delroute 删除。
+  TUN 无 L2/ARP，router 字段仅为占位，原始 IP 包直接进 TUN，由手机 NAT/代理出网。
+- 已随本分支编译通过。
+
 ## 修复后预期
 
 - 默认 MTU 23：设备→手机 20B/片（可用但慢）；手机→设备同 20B/片。
