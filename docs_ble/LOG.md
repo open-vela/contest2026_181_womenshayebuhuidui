@@ -38,3 +38,8 @@
   seq/ack 推进）、ICMP ping（MTU 247 与 MTU 23 回退路径）、DNS 转发（方向修复验证）。
 - 意义：协议设计层已闭环；剩余验证项只剩真机 BLE 射频/协议栈行为（GATT 连接、
   MTU 协商、notify 完成回调时序、LCPU 固件兼容性）——需物理板卡。
+- 突破 11：回归测试（legacy_bugs 模式复现 Round2 前缺陷）→ 旧代码 0B 数据 + 3 丢包，
+  证明仿真有判别力、修复必要且有效。
+- 突破 12：web 检索恢复可用，定位 zblue 栈 3 个未启用性能开关
+  （AUTO_UPDATE_CONN_PARAMS / PPCP / AUTO_DATA_LEN_UPDATE）+ 收集 NUS 吞吐文献
+  （连接间隔是 4KB/s 瓶颈的实锤案例等），整理为 07 文档 + 真机试验矩阵。
