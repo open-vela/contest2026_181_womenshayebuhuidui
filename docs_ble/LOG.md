@@ -64,3 +64,20 @@
   panu_service/bt_pan/bt_socket_pan/tools-panu 全部激活。
   SRAM 90.35%（+10KB）编译通过。
 - 待办：真机验证 pan connect 手机 NAP → bt-pan → 上网（固件已含 PAN，需烧录）。
+
+## Round 4-2（2026-08-15 深夜，PAN 真机调试）
+
+- 突破 16：**L2CAP BR PSM 0x000F 连接被手机接受**（docs_ble/11）：
+  完整链路 ACL up → 加密 level 2 → L2CAP connect ret=0 → 手机 CONN_RSP
+  result=0x0000 SUCCESS（dcid=0x0072）。阻塞推进到 CONFIG 阶段。
+- 修复 1（EEXIST 根因）：pan_conn_t.chan 类型错误——zblue BR_CHAN() 宏按
+  bt_l2cap_br_chan 布局越界访问 psm（calloc 垃圾值非零）→ 改 bt_l2cap_br_chan。
+- 修复 2：worker ACL up 等待 3s→10s 轮询（远端 page 可超 3s）。
+- 修复 3（最新）：br_chan rx.mtu 未初始化=0 → l2cap_br_conf 发 MTU=0 配置 →
+  手机回 CONF_RSP UNACCEPTABLE_PARAMS → 断链。已初始化 rx.mtu=672 + sec L2。
+- 修复 4：LCPU bth4 RX/TX 打印 8→40 字节（可见完整 L2CAP 信令）。
+- 待办（明天）：抓我方 CONF_REQ 完整字节分析被拒原因（嫌疑：MTU option、
+  zblue conf 交互、或需显式 MTU=672 option）；目标 CONFIG 通过 → BNEP Setup →
+  state:2 CONNECTED → 数据面。
+- 环境要点：手机「蓝牙网络共享」必须开启（否则手机直接断 ACL reason 0x13）；
+  烧录用 logs/flash_rts.py + for 重试 2-3 次（RTS 时序不稳）。
