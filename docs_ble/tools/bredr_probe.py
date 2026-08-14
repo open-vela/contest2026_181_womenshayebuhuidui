@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
 """
-BREDR 闸门 0 探测脚本 v2（docs_ble Round 3）
+BREDR 闸门 0 探测脚本 v3（docs_ble Round 3）
 =========================================
-v2 修复:
-  1. 先启动 bluetoothd 服务（rcS 为空，不会自动启动）
-  2. bttool 是交互式工具: 进入 bttool> 后命令不带 "bttool" 前缀
-
-用法:
-  python3 bredr_probe.py [串口, 默认 /dev/ttyACM0] [波特率, 默认 1000000]
-
-判定:
-  PASS - get addr 返回非零 BREDR 地址 + inquiry 有结果
-  FAIL - HCI 命令超时 / unknown command / 全零地址 / bluetoothd 起不来
+v3 修复:
+  1. 先退出设备上残留的 bttool 交互会话（v1/v2 脚本遗留，会吃掉后续所有命令）
+  2. 检查/启动 bluetoothd
+  3. 重新进入 bttool 交互模式执行探测
 """
 import serial, sys, time, re
 
@@ -32,83 +26,97 @@ def pump(ser, seconds, stop_markers=()):
                     return buf
     return buf
 
-def cmd(ser, text, wait=3):
+def cmd(ser, text, wait=3, marker=None):
     sys.stdout.write(f"\n>>> {text}\n")
     ser.write((text + "\r\n").encode())
-    return pump(ser, wait)
+    return pump(ser, wait, (marker,) if marker else ())
+
+def wait_prompt(ser, prompt, timeout=10):
+    """等待指定提示符出现"""
+    buf = b""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        data = ser.read(256)
+        if data:
+            buf += data
+            if prompt in buf:
+                return True
+    return prompt in buf
 
 def main():
     ser = serial.Serial(PORT, BAUD, timeout=0.3)
     ser.reset_input_buffer()
-    print(f"[probe] 等待 nsh> ...")
+    print("[probe] 等待 nsh> ...")
     ser.write(b"\r\n")
-    pump(ser, 15, (b"nsh>",))
+    pump(ser, 10, (b"nsh>",))
     results = []
 
-    # 0. 启动 bluetoothd 服务（后台）
-    cmd(ser, "bluetoothd &", 4)
-    out = pump(ser, 5)
-    results.append(("bluetoothd", "已发送启动命令"))
+    # 1. 退出残留的 bttool 会话（若在 bttool> 下，quit 有效；在 nsh> 下报 unknown 无害）
+    print("[probe] 清理残留 bttool 会话 ...")
+    ser.write(b"quit\r\n")
+    pump(ser, 2)
+    ser.write(b"q\r\n")
+    pump(ser, 2, (b"nsh>",))
+    # 确保回到 nsh>
+    if not wait_prompt(ser, b"nsh>", 5):
+        ser.write(b"\r\n")
+        pump(ser, 3, (b"nsh>",))
 
-    # 1. 进入 bttool 交互模式
-    cmd(ser, "bttool", 4)
-    out = pump(ser, 6, (b"bttool>",))
+    # 2. 启动 bluetoothd（若已运行会报 already running 之类，无害）
+    out = cmd(ser, "bluetoothd &", 4)
+    time.sleep(2)
+    out += pump(ser, 4)
+    results.append(("bluetoothd", "已启动" if b"already" not in out else "已在运行"))
+
+    # 3. 进入 bttool 交互模式（新会话）
+    out = cmd(ser, "bttool", 5, marker=b"bttool>")
     if b"create instance error" in out:
-        print("[probe] !! bluetoothd 未就绪或连接失败，等待后重试 ...")
+        print("[probe] !! create instance error：bluetoothd 未就绪，等待重试 ...")
         time.sleep(3)
-        cmd(ser, "bttool", 4)
-        out = pump(ser, 6, (b"bttool>",))
-    results.append(("bttool", "交互模式"))
+        out = cmd(ser, "bttool", 5, marker=b"bttool>")
+    results.append(("bttool", "OK(无实例错误)" if b"create instance error" not in out else "实例创建失败!"))
 
-    # 2. 适配器使能
+    # 4. 适配器使能
     cmd(ser, "enable", 6)
     out = pump(ser, 8)
-    results.append(("enable", "观察日志"))
+    results.append(("enable", "已发送"))
 
-    # 3. 适配器状态
-    cmd(ser, "state", 3)
-    out = pump(ser, 5)
-    results.append(("state", out.decode(errors="replace")[-80:].replace("\n", " ")))
+    # 5. 状态
+    out = cmd(ser, "state", 3)
+    results.append(("state", out.decode(errors="replace")[-100:].replace("\n", " ")))
 
-    # 4. 本地地址（BREDR 地址非零 = 控制器有 BREDR 地址空间）
-    cmd(ser, "get addr", 3)
-    out = pump(ser, 6)
+    # 6. 本地 BREDR 地址
+    out = cmd(ser, "get addr", 3)
     addr = re.search(rb"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", out)
     addr_str = addr.group(0).decode() if addr else "N/A"
     results.append(("get addr", addr_str))
 
-    # 5. 可发现+可连接（BREDR inquiry/page scan）—— bttool 命令是 set scanmode
+    # 7. 可发现+可连接
     cmd(ser, "set scanmode 2", 3)
     pump(ser, 5)
-    results.append(("set scanmode 2", "观察日志"))
 
-    # 6. 经典发现（inquiry，10 秒）—— 注意 bttool 命令名是 inquiry
-    cmd(ser, "inquiry start 10", 3)
-    out = pump(ser, 16)
+    # 8. BREDR inquiry（10 秒，手机需开经典蓝牙可见性）
+    out = cmd(ser, "inquiry start 10", 3)
+    out += pump(ser, 16)
     devs = re.findall(rb"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", out)
     found = len(devs) > 0
-    results.append(("inquiry", f"发现 {len(devs)} 个地址" if found else "未发现设备"))
+    results.append(("inquiry", f"发现 {len(devs)} 个设备" if found else "未发现设备"))
 
-    # 7. 退出
+    # 9. 干净退出，回到 NSH
     cmd(ser, "quit", 2)
-    pump(ser, 2)
+    pump(ser, 2, (b"nsh>",))
 
     print("\n========== 探测结果 ==========")
     for k, v in results:
         print(f"  {k}: {v}")
 
-    addr_ok = addr_str not in ("N/A", "00:00:00:00:00:00", "")
-    if addr_ok and found:
-        verdict = "PASS (BREDR 可用)"
-    elif addr_ok and not found:
-        verdict = "UNKNOWN (地址有效但 inquiry 无结果 — 检查手机经典蓝牙可见性)"
-    elif not addr_ok:
-        verdict = "FAIL (BREDR 地址无效/不可用)"
+    if "实例创建失败" in results[2][1]:
+        verdict = "FAIL (bluetoothd 未就绪 — 需人工排查蓝牙服务)"
+    elif addr_str not in ("N/A", "00:00:00:00:00:00"):
+        verdict = "PASS (BREDR 地址有效" + ("，且发现设备" if found else "，inquiry 无结果需复查手机可见性") + ")"
     else:
-        verdict = "UNKNOWN"
+        verdict = "FAIL (BREDR 地址无效/不可用)"
     print(f"判定: {verdict}")
-    print("提示: 完整日志请另存串口输出。若 inquiry 空, 请确认手机开了经典蓝牙可见性,")
-    print("      或在 NSH 先跑 ai_agent & 让蓝牙栈完整初始化后再试。")
     ser.close()
 
 if __name__ == "__main__":
