@@ -50,7 +50,25 @@ def main():
     ser.reset_input_buffer()
     print("[probe] 等待 nsh> ...")
     ser.write(b"\n")
-    pump(ser, 10, (b"nsh>",))
+    out0 = pump(ser, 8, (b"nsh>",))
+    if b"nsh>" not in out0 and b"bttool>" not in out0:
+        # 无任何提示符: 尝试 RTS 复位(部分板子有效), 再等一次
+        print("[probe] 无提示符, 尝试 RTS 复位 ...")
+        try:
+            ser.rts = True; time.sleep(0.5); ser.rts = False
+        except Exception:
+            pass
+        time.sleep(4)
+        ser.write(b"\n")
+        out0 = pump(ser, 8, (b"nsh>",))
+    if b"nsh>" not in out0:
+        print("[probe] !! 未检测到 nsh> 提示符。")
+        if b"bttool>" in out0:
+            print("[probe] !! 设备上存在 bttool 会话(可能已僵尸化)。")
+        print("[probe] !! 请物理复位: 拔插 USB 或按板子复位键, 待 nsh> 出现后重新运行。")
+        print("[probe] !! (脚本的 RTS 复位对部分板子无效, 不要依赖它)")
+        ser.close()
+        sys.exit(2)
     results = []
 
     # 1. 检测/清理残留的 bttool 会话
@@ -65,8 +83,8 @@ def main():
         out = pump(ser, 3)
         if b"UnKnow command quit" in out or b"Unknow command quit" in out:
             print("\n[probe] !! 检测到僵尸 bttool 会话(命令表未初始化, 无法用命令退出)。")
-            print("[probe] !! 请重启设备(拔插 USB 或按复位键), 待 nsh> 出现后重新运行本脚本。")
-            print("[probe] !! 注意: 重启后请先手动执行: bluetoothd &  (如脚本未自动启动)")
+            print("[probe] !! 请物理复位: 拔插 USB 或按板子复位键, 待 nsh> 出现后重新运行本脚本。")
+            print("[probe] !! (bluetoothd 由脚本自动启动, 无需手动)")
             ser.close()
             sys.exit(2)
         pump(ser, 2, (b"nsh>",))
