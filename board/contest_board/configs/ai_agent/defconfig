@@ -289,9 +289,8 @@ CONFIG_EXAMPLES_AI_AGENT_VELA_SHELL_FULL=y
 # CONFIG_AI_AGENT_NODE is not set
 # CONFIG_AI_AGENT_MCP is not set
 CONFIG_AI_AGENT_LVGL_UI=y
-# TEMP(isolate bt verify): disable LVGL UI to avoid the layout-sensitive
-# heap-corruption crash seen during voice/LVGL init on this build.
-# CONFIG_AI_AGENT_LVGL_UI is not set
+CONFIG_AI_AGENT_LCD_PATH="/dev/lcd0"
+CONFIG_AI_AGENT_TOUCH_PATH="/dev/input0"
 # BLE GATT NUS channel is the data path (LCPU firmware has no BREDR/SPP)
 # CONFIG_AI_AGENT_BLE_NET is not set
 CONFIG_AI_AGENT_BLE_GATT=y
@@ -302,4 +301,5 @@ CONFIG_LV_FONT_SIMSUN_16_CJK=y
 CONFIG_LV_FONT_DEFAULT_SIMSUN_16_CJK=y
 # Launcher desktop pages need montserrat sizes (simsun is 16px only)
 CONFIG_LV_FONT_MONTSERRAT_24=y
+CONFIG_LV_FONT_MONTSERRAT_32=y
 CONFIG_LV_FONT_MONTSERRAT_48=y

@@ -3,7 +3,7 @@
   "team_id": "contest2026_181_womenshayebuhuidui",
   "github_login": "Sen70s",
   "generator": "claude-code-collector@1.2.0",
-  "updated_at": "2026-08-12T15:07:26.211Z",
+  "updated_at": "2026-08-13T10:41:07.850Z",
   "sessions": [
     {
       "session_id": "ffa73403-f2c6-48d4-b6ab-d16ede1bb8d1",
@@ -77,6 +77,29 @@
       "collection_mode": "cli",
       "health": "ok",
       "model": "step-3.5-flash-2603"
+    },
+    {
+      "session_id": "de0e3a2c-d4a5-4dfd-a8a0-fc9ab93ab064",
+      "tool": "claude-code",
+      "started_at": "2026-08-13T10:24:23.763Z",
+      "last_event_at": "2026-08-13T10:41:04.365Z",
+      "event_count": 232,
+      "raw_event_count": 303,
+      "file_path": "logs/Sen70s/2026-08-13/claude-code__de0e3a2c-d4a5-4dfd-a8a0-fc9ab93ab064.jsonl",
+      "collection_mode": "cli",
+      "health": "ok",
+      "model": "deepseek-v4-flash"
+    },
+    {
+      "session_id": "a857badf-e0f6-417d-b69a-e255b60cc56f",
+      "tool": "claude-code",
+      "started_at": "2026-08-13T10:24:23.779Z",
+      "last_event_at": "2026-08-13T10:41:07.850Z",
+      "event_count": 5,
+      "raw_event_count": 7,
+      "file_path": "logs/Sen70s/2026-08-13/claude-code__a857badf-e0f6-417d-b69a-e255b60cc56f.jsonl",
+      "collection_mode": "cli",
+      "health": "ok"
     }
   ]
 }
