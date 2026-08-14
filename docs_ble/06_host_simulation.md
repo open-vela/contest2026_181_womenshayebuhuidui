@@ -23,7 +23,12 @@
 [PASS] ICMP ping answered (MTU 247)    drops=0
 [PASS] ICMP at MTU 23 (20B chunks)     drops=0               ← 未协商 MTU 的回退路径
 [PASS] DNS query forwarded (direction fix)  udp=45B
+[PASS] REGRESSION: legacy bugs caught by sim  legacy got 0B drops=3
 ```
+
+回归测试（legacy_bugs=True 复现 Round2 修复前行为）：HTTP 传输 **0B 数据 + 3 次丢包**
+—— 正是 ACK ack=0/seq 错位导致设备丢弃段的后果。证明仿真能捕捉已修复的缺陷，
+不是空转通过；也再次确认 Round2 五项修复的必要性。
 
 - 64KB 大文件验证了：分片重组不丢字节、代理 ACK/seq 语义正确（否则 NuttX 严格
   接受规则会触发 drops>0）、双向数据流完整。

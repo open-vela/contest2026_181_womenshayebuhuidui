@@ -103,12 +103,14 @@ PROTO_TCP, PROTO_UDP, PROTO_ICMP = 6, 17, 1
 SYN, RST, ACK, PSH, FIN = 0x02, 0x04, 0x10, 0x08, 0x01
 
 class PhoneProxy:
-    def __init__(self, link: BleLink):
+    def __init__(self, link: BleLink, legacy_bugs=False):
+        """legacy_bugs=True 复现 Round2 修复前的缺陷（回归测试用）"""
         self.link = link
         self.sessions = {}
         self.ip_id = 0x2000
         self.rx = FrameAssembler()
         self._stop = False
+        self.legacy = legacy_bugs
     def start_pump(self):
         """后台线程持续收取链路分片并处理 IP 包"""
         def loop():
@@ -172,7 +174,11 @@ class PhoneProxy:
             self.send_tcp(key, s, s["server_seq"], s["client_ack"], FIN | ACK)
             s["fin_sent"] = True
         if payload or (flags & ACK):
-            self.send_tcp(key, s, s["server_seq"], s["client_ack"], ACK)
+            if self.legacy:
+                # 旧缺陷: ack=0, seq=设备侧序号
+                self.send_tcp(key, s, s["client_seq"], 0, ACK)
+            else:
+                self.send_tcp(key, s, s["server_seq"], s["client_ack"], ACK)
     def open_session(self, key, src, sp, dst, dp, client_seq):
         try:
             sock = socket.create_connection((dst, dp), timeout=10)
@@ -186,7 +192,8 @@ class PhoneProxy:
                  "fin_sent": False}
             self.sessions[key] = s
             self.send_tcp(key, s, server_seq, (client_seq + 1) & 0xffffffff, SYN | ACK)
-            s["server_seq"] = (server_seq + 1) & 0xffffffff  # SYN 消耗一个序号
+            if not self.legacy:
+                s["server_seq"] = (server_seq + 1) & 0xffffffff  # SYN 消耗一个序号
             threading.Thread(target=self.read_server, args=(key, s), daemon=True).start()
         except OSError:
             self.send_rst(src, sp, dst, dp, (client_seq + 1) & 0xffffffff)
@@ -430,6 +437,27 @@ def run_tests():
     dns.close()
     ok5 = dev5.last_udp is not None and b"\x81\x80" in dev5.last_udp[:4]
     results.append(("DNS query forwarded (direction fix)", ok5, f"udp={len(dev5.last_udp or b'')}B"))
+
+    # 6. 回归测试: 旧缺陷模式必须失败 (证明仿真有判别力)
+    httpd3 = socket.socket(); httpd3.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    httpd3.bind(("127.0.0.1", 0)); httpd3.listen(1)
+    port3 = httpd3.getsockname()[1]
+    def legacy_server():
+        c, _ = httpd3.accept()
+        c.recv(4096)
+        c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nLEGACY")
+        c.close(); httpd3.close()
+    threading.Thread(target=legacy_server, daemon=True).start()
+    link6 = BleLink(mtu=247)
+    dev6 = DeviceStack(link6)
+    proxy6 = PhoneProxy(link6, legacy_bugs=True); proxy6.start_pump()
+    ok6, n6, d6, note6 = tcp_flow(link6, dev6, 40002, port3,
+        b"GET / HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n",
+        b"LEGACY", wait=1.5)
+    # 旧缺陷下数据确认缺失 -> 重传/错位, 期望 FAIL (ok6 为 False 或丢包)
+    regression_ok = (not ok6) or d6 > 0
+    results.append(("REGRESSION: legacy bugs caught by sim", regression_ok,
+        f"legacy got {n6}B drops={d6} (expected failure)"))
 
     for name, ok, note in results:
         print(f"[{'PASS' if ok else 'FAIL'}] {name}  {note}")
