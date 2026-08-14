@@ -51,13 +51,23 @@ def main():
     pump(ser, 10, (b"nsh>",))
     results = []
 
-    # 1. 退出残留的 bttool 会话（若在 bttool> 下，quit 有效；在 nsh> 下报 unknown 无害）
-    print("[probe] 清理残留 bttool 会话 ...")
-    ser.write(b"quit\r\n")
-    pump(ser, 2)
-    ser.write(b"q\r\n")
-    pump(ser, 2, (b"nsh>",))
-    # 确保回到 nsh>
+    # 1. 检测/清理残留的 bttool 会话
+    #    僵尸会话(create instance error 后)命令表为空, 连 quit 都无法执行,
+    #    只能重启设备。正常会话发 quit 会回到 nsh>。
+    print("[probe] 检测残留 bttool 会话 ...")
+    ser.write(b"\r\n")
+    out = pump(ser, 2)
+    if b"bttool>" in out:
+        # 有 bttool 会话, 尝试正常退出
+        ser.write(b"quit\r\n")
+        out = pump(ser, 3)
+        if b"UnKnow command quit" in out or b"Unknow command quit" in out:
+            print("\n[probe] !! 检测到僵尸 bttool 会话(命令表未初始化, 无法用命令退出)。")
+            print("[probe] !! 请重启设备(拔插 USB 或按复位键), 待 nsh> 出现后重新运行本脚本。")
+            print("[probe] !! 注意: 重启后请先手动执行: bluetoothd &  (如脚本未自动启动)")
+            ser.close()
+            sys.exit(2)
+        pump(ser, 2, (b"nsh>",))
     if not wait_prompt(ser, b"nsh>", 5):
         ser.write(b"\r\n")
         pump(ser, 3, (b"nsh>",))
