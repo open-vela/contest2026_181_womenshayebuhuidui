@@ -128,9 +128,16 @@ def main():
     # 8. BREDR inquiry（10 秒，手机需开经典蓝牙可见性）
     out = cmd(ser, "inquiry start 10", 3)
     out += pump(ser, 16)
-    devs = re.findall(rb"([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}", out)
+    # bttool 不打印设备列表, 需解析 HCI 原始事件:
+    #   04 02 <len> <num> <BD_ADDR 6B> ... = Inquiry Result 事件
+    devs = set()
+    for m in re.finditer(rb"04 02 ([0-9a-fA-F]{2}) (([0-9a-fA-F]{2} ){6})", out):
+        num = int(m.group(1), 16)
+        if num > 0:
+            addr_bytes = m.group(2).split()
+            devs.add(":".join(b.decode() for b in addr_bytes[:6]))
     found = len(devs) > 0
-    results.append(("inquiry", f"发现 {len(devs)} 个设备" if found else "未发现设备"))
+    results.append(("inquiry", f"HCI 发现 {len(devs)} 个 BREDR 设备: {', '.join(sorted(devs))}" if found else "未发现设备"))
 
     # 9. 干净退出，回到 NSH
     cmd(ser, "quit", 2)
