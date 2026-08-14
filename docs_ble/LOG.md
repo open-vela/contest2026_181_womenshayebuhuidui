@@ -29,3 +29,12 @@
   attr_handle+srv_id 元素索引一致，通知路径无隐患。
 - 阻塞：真机验证仍需连接开发板；App 安装包 app-debug.apk 已生成
   （com.agent.coapp-main/app/build/outputs/apk/debug/）。
+
+## Round 3（2026-08-15，主机端全链路仿真验证）
+
+- 突破 9：编写 docs_ble/tools/tunnel_sim.py —— 无真机条件下的端到端协议仿真，
+  精确镜像两端已修复逻辑（帧协议/分片/NuttX 严格 seq 接受/代理 ACK 语义/DNS 方向/ICMP）。
+- 突破 10：仿真 5 项测试全部 PASS、0 丢包 —— HTTP GET、64KB 大文件（跨多帧+多分片+
+  seq/ack 推进）、ICMP ping（MTU 247 与 MTU 23 回退路径）、DNS 转发（方向修复验证）。
+- 意义：协议设计层已闭环；剩余验证项只剩真机 BLE 射频/协议栈行为（GATT 连接、
+  MTU 协商、notify 完成回调时序、LCPU 固件兼容性）——需物理板卡。
