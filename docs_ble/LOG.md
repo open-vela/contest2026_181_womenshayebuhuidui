@@ -22,6 +22,10 @@
   E) 失败 RST ack=0 → 设备 SYN 重传超时；F) 新增 ICMP echo 应答（链路自检）。
 - 突破 7：核对设备侧 NuttX 行为与代理假设一致 —— tcp_input.c 段接受逻辑
   （seq==rcv_nxt 才处理）、TUN 软校验和、UDP 校验和 0 豁免 —— 两端协议握手成立。
-- 固件侧无新改动（Round 1 分片+路由修复已编译通过）；App 修复后再次构建通过。
+- 突破 8：定位设备端启动竞态 —— ble_gatt_net_init 只调用一次，bluetoothd 未就绪时
+  GATT 通道永远起不来（手机无法连接）；改为 5 次 × 3s 重试（network_manager.c）。
+- 固件：重试修复后 ninja 编译通过；App 修复后再次构建通过。
+- 核对：GATT notify 目标按 UUID 匹配 value 属性（zblue foreach_attr），
+  attr_handle+srv_id 元素索引一致，通知路径无隐患。
 - 阻塞：真机验证仍需连接开发板；App 安装包 app-debug.apk 已生成
   （com.agent.coapp-main/app/build/outputs/apk/debug/）。
