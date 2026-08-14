@@ -43,3 +43,13 @@
 - 突破 12：web 检索恢复可用，定位 zblue 栈 3 个未启用性能开关
   （AUTO_UPDATE_CONN_PARAMS / PPCP / AUTO_DATA_LEN_UPDATE）+ 收集 NUS 吞吐文献
   （连接间隔是 4KB/s 瓶颈的实锤案例等），整理为 07 文档 + 真机试验矩阵。
+- 突破 13（真机，8-15）：**BREDR 闸门 0 通过** —— LCPU 固件支持 BREDR！
+  真机实测：HCI RESET/Features/Version 全响应、适配器 ON（state 4）、
+  get addr 返回 CD:AB:78:56:34:12、**inquiry 发现 BREDR 设备**（Inquiry Result
+  事件 04 02 ... a4:d1:fe:b3:xx 重复上报）、SPP 栈初始化成功。
+  推翻 docs/11 的"BREDR 不支持"结论（此前失败是 CRLF+僵尸会话工具链问题）。
+- 踩坑记录（工具链，真机调试必读）：
+  ① bttool 是交互式工具，命令不带前缀；② 发送命令必须只带 \n（\r 残留导致
+  UnKnow command）；③ create instance error = bluetoothd 没启动（rcS 为空，
+  需手动 bluetoothd &）；④ 僵尸 bttool 会话命令表为空连 quit 都无效，
+  只能物理拔插 USB 复位（RTS 复位不可靠）。

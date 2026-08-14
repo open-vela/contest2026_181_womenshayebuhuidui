@@ -25,6 +25,22 @@ write_inquiry_scan_type / inquiry）与 LE 扫描（sal_adapter_interface.c 1025
 - 日志出现 HCI command timeout / unknown opcode → **闸门 0 失败**
 - 地址非零但 discovery 空 → 需人工复查（手机可见性、日志中 inquiry 响应）
 
+## ✅ 闸门 0 探测结果：通过（2026-08-15 真机实测）
+
+**LCPU 固件支持 BREDR！** 历史诊断（docs/11 "BREDR 命令无响应"）被推翻——之前
+探测失败的原因是工具链问题（CRLF 与僵尸会话），不是固件。
+
+实测证据（bttool 驱动，1M 串口）：
+
+| 步骤 | 观测 | 结论 |
+|------|------|------|
+| enable | HCI_RESET/Read Features/Read Version 全部 Command Complete；Adapter 1→2→3→4；Class 0x00280704；SPP profile 初始化 | 蓝牙栈完整启动 |
+| get addr | Local Address: CD:AB:78:56:34:12 | BREDR 地址空间有效（默认测试地址） |
+| set scanmode 2 | Scan Mode:2 set success | inquiry/page scan 可开 |
+| inquiry start 10 | HCI Inquiry 命令状态成功；**Inquiry Result 事件（04 02 ... a4:d1:fe:b3:xx）重复上报**；Inquiry Complete | **BREDR 设备发现正常** |
+
+→ **BREDR 可用，PAN(BNEP) 实现前提成立，路线解锁！**
+
 ## 使用
 
 ```bash
