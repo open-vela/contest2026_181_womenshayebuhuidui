@@ -27,8 +27,10 @@ def pump(ser, seconds, stop_markers=()):
     return buf
 
 def cmd(ser, text, wait=3, marker=None):
+    # 注意: 只发 \n。bttool 的 getline 只剥 \n, 若发 \r\n 则 \r 残留
+    # 在 token 尾部, 导致 "enable\r" != "enable" 匹配失败 (UnKnow command)
     sys.stdout.write(f"\n>>> {text}\n")
-    ser.write((text + "\r\n").encode())
+    ser.write((text + "\n").encode())
     return pump(ser, wait, (marker,) if marker else ())
 
 def wait_prompt(ser, prompt, timeout=10):
@@ -47,7 +49,7 @@ def main():
     ser = serial.Serial(PORT, BAUD, timeout=0.3)
     ser.reset_input_buffer()
     print("[probe] 等待 nsh> ...")
-    ser.write(b"\r\n")
+    ser.write(b"\n")
     pump(ser, 10, (b"nsh>",))
     results = []
 
@@ -55,11 +57,11 @@ def main():
     #    僵尸会话(create instance error 后)命令表为空, 连 quit 都无法执行,
     #    只能重启设备。正常会话发 quit 会回到 nsh>。
     print("[probe] 检测残留 bttool 会话 ...")
-    ser.write(b"\r\n")
+    ser.write(b"\n")
     out = pump(ser, 2)
     if b"bttool>" in out:
-        # 有 bttool 会话, 尝试正常退出
-        ser.write(b"quit\r\n")
+        # 有 bttool 会话, 尝试正常退出 (quit 必须只发 \n)
+        ser.write(b"quit\n")
         out = pump(ser, 3)
         if b"UnKnow command quit" in out or b"Unknow command quit" in out:
             print("\n[probe] !! 检测到僵尸 bttool 会话(命令表未初始化, 无法用命令退出)。")
