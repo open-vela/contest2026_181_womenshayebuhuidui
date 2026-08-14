@@ -278,6 +278,9 @@ CONFIG_BLUETOOTH_BLE_ADV=y
 # BREDR is not supported by the LCPU firmware, so SPP never activates.
 CONFIG_BLUETOOTH_SPP=y
 CONFIG_BT_RFCOMM=y
+# PAN (BNEP over BREDR) — 2026-08-15 BREDR 闸门0通过后启用:
+# 手机"蓝牙网络共享"(NAP) 配对后经 bt-pan 网卡代理上网
+CONFIG_BLUETOOTH_PAN=y
 # CONFIG_BLUETOOTH_LOG is not set
 
 # Official ai_agent framework (EXAMPLES_AI_AGENT_VELA)
