@@ -36,6 +36,14 @@ typedef enum
 void launcher_create(void);
 
 /**
+ * Get the desktop page object
+ *
+ * Returns the launcher desktop object so callers can move it to the
+ * foreground or manage its layer.
+ */
+lv_obj_t *launcher_desktop_obj(void);
+
+/**
  * Enter a specific application page
  *
  * @param page Page ID (PAGE_PET, PAGE_SETTINGS, PAGE_ABOUT)
