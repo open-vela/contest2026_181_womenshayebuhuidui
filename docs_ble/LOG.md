@@ -11,3 +11,17 @@
 - 突破 4：定位并修复 TUN 无默认路由缺陷（0.0.0.0/0 → 192.168.55.1）。
 - 固件两轮编译通过（SRAM 463016/524288 = 88.31%）。
 - 阻塞：① App 编译需可写 ~/.gradle 的环境；② 真机验证需连接开发板（当前无串口设备）。
+
+## Round 2（2026-08-15，App 协议层修复 + 编译验证）
+
+- 突破 5：解决 App 编译阻塞 —— GRADLE_USER_HOME 迁至工作区可写目录（2.7G 缓存拷贝），
+  assembleDebug --offline 构建成功，MTU 协商修改编译通过。
+- 突破 6：定位并修复 App TcpProxy 5 处协议缺陷（见 05_app_proxy_fixes.md）：
+  A) 纯 ACK ack=0 → 设备数据永不确认、无限重传；B) ACK seq 用错流 → NuttX 整段丢弃；
+  C) SYN-ACK 后 serverSeq 未 +1 → 首段数据错位截断；D) DNS 应答 src/dst 写反；
+  E) 失败 RST ack=0 → 设备 SYN 重传超时；F) 新增 ICMP echo 应答（链路自检）。
+- 突破 7：核对设备侧 NuttX 行为与代理假设一致 —— tcp_input.c 段接受逻辑
+  （seq==rcv_nxt 才处理）、TUN 软校验和、UDP 校验和 0 豁免 —— 两端协议握手成立。
+- 固件侧无新改动（Round 1 分片+路由修复已编译通过）；App 修复后再次构建通过。
+- 阻塞：真机验证仍需连接开发板；App 安装包 app-debug.apk 已生成
+  （com.agent.coapp-main/app/build/outputs/apk/debug/）。
