@@ -53,3 +53,14 @@
   UnKnow command）；③ create instance error = bluetoothd 没启动（rcS 为空，
   需手动 bluetoothd &）；④ 僵尸 bttool 会话命令表为空连 quit 都无效，
   只能物理拔插 USB 复位（RTS 复位不可靠）。
+
+## Round 4（2026-08-15，PAN 实现）
+
+- 突破 14：确认手机 a4:cc:b3:fe:d1:a4 被 inquiry 发现（HCI 事件 LSB-first 字节
+  a4 d1 fe b3 cc a4 反转即手机地址）—— BREDR 双向链路确认。
+- 突破 15：**自研 BNEP SAL 层完成并编译通过**（docs_ble/10）：
+  sal_pan_interface.c/h（~500 行）：L2CAP BR PSM 0x000F + Setup 握手 +
+  FRAME_ETH 数据路径 + 状态机；CONFIG_BLUETOOTH_PAN=y 启用；
+  panu_service/bt_pan/bt_socket_pan/tools-panu 全部激活。
+  SRAM 90.35%（+10KB）编译通过。
+- 待办：真机验证 pan connect 手机 NAP → bt-pan → 上网（固件已含 PAN，需烧录）。
