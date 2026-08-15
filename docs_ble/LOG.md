@@ -147,3 +147,18 @@
   ④ pan connect → 加密(link key 在 RAM) → BNEP → bt-pan → 上网；
   ⑤ 备选：改 vendor bth4 移除 WRITE_SCAN_ENABLE emulate（BR 可发现，官方 SDK 证实
   LCPU 支持），需重编译烧录。
+
+## Round 4-5（2026-08-15 晚，双通道可发现突破）
+
+- 突破 22：**WRITE_SCAN_ENABLE 转发生效**：新固件（bth4 移除 emulate）烧录后，
+  `set scanmode 1/2` 真正下发 HCI：`04 0e 04 06 1a 0c 00` =
+  Command Status status=0 opcode 0x0C1A（Write_Scan_Enable）——LCPU 接受！
+  控制器 inquiry+page scan 开启 → 板子 BR 可发现（Round 4-4 根因修复验证成功）。
+- 突破 23：**BLE legacy 广播成功**：`adv start -t adv_ind -m legacy -n Agent-Watch`
+  → `04 0e 04 06 0a 20 00`（LE_Set_Advertising_Parameters 0x200A status=0）→
+  `[adv] zblue_start_adv: zblue start OK`（新加 syslog）→
+  `on_advertising_start_cb status:0` SUCCESS！之前失败因 `-t adv_ind` 是 ext 语义。
+- 修复过程记录：flash_rts.py 烧录后板子进 DFU（msh/RT-Thread，dfu_pan）——
+  sftool soft_reset 后 boot 链进 dfu_pan；恢复方法：写 openvela_ftab.bin@0x12000000
+  （ftab[3]/[7]→0x12010000）+ nuttx@0x12010000（flash_openvela_ftab.py，Round 4-2 流程）。
+- 当前状态：BR 可发现 + BLE 广播双通道就绪，等待手机配对（PIN 0000）。
