@@ -282,6 +282,9 @@ CONFIG_BT_RFCOMM=y
 # 手机"蓝牙网络共享"(NAP) 配对后经 bt-pan 网卡代理上网
 CONFIG_BLUETOOTH_PAN=y
 # CONFIG_BLUETOOTH_LOG is not set (log_server needs KVDB property, conflicts with unqlite storage)
+# zblue stack debug log (syslog): needed to trace Link_Key_Request handling
+CONFIG_BT_DEBUG_LOG=y
+CONFIG_BT_DEBUG_LOG_LEVEL=6
 
 # Official ai_agent framework (EXAMPLES_AI_AGENT_VELA)
 CONFIG_EXAMPLES_AI_AGENT_VELA=y
