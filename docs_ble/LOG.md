@@ -162,3 +162,25 @@
   sftool soft_reset 后 boot 链进 dfu_pan；恢复方法：写 openvela_ftab.bin@0x12000000
   （ftab[3]/[7]→0x12010000）+ nuttx@0x12010000（flash_openvela_ftab.py，Round 4-2 流程）。
 - 当前状态：BR 可发现 + BLE 广播双通道就绪，等待手机配对（PIN 0000）。
+
+## Round 6-7（2026-08-15 深夜 ~ 08-16 凌晨，加密定位 + SSP 桥接 + 可发现突破）
+
+- 突破 24：**04 13 是 Number-of-Completed-Packets 而非 EncryptChange**——R52 的"归一化"
+  破坏合法事件（num 1→0），已删除；真加密事件 0x08 在认证失败路径从不出现。
+- 突破 25：**rx_work 事件滞留**——zblue rx_work_handler 单事件+自提交模式在本移植
+  丢事件（运行中 k_work_submit 不保证重调度）→ 改为 while 循环排空（0x23 事件曾
+  进 bt_recv 但永不处理）。
+- 突破 26：**SSP 事件号桥接**——LCPU 用标准号（0x23 IO_CAPA_REQ 等）且按 handle
+  （大端）寻址，zblue 用偏移号（0x31/0x32/0x33/0x34/0x36/0x3b）按 bdaddr 寻址；
+  bth4 建立 handle→addr 映射并重写事件 → **zblue 首次收到 io_capa_req 并成功回复
+  IO_CAPABILITY_REPLY (0x042b)**——SSP 配对流程第一次真实推进（LCPU 随后卡在 IO 交换）。
+- 突破 27：**可发现性最终修复**——zblue enable 只开 page scan（0x0c1a 参数 0x02）；
+  bth4 强制 inquiry 位 + 100% 占空比 scan activity（0x0800/0x0800）+ interlaced 扫描
+  类型 → **手机首次在蓝牙列表看到板子（cd:ab:78:56:34:12 = 板子 BR 地址）**。
+- 突破 28：**inquiry 探针验证射频**——bth4 enable 后自动发 GIAC inquiry（10s）→
+  LCPU 返回 Inquiry Result（手机 a4:d1:fe:b3:cc:a4）——BR 收发链路完全正常。
+- 发现：bluetoothd bt_list_add_tail malloc NULL 崩溃（storage 写坏）→ 每次测试前
+  rm -rf /data/misc/bt；崩溃 assert 停机需 USB 拔插恢复。
+- 现状：手机可搜到板子但尚未完成配对；LCPU 名字字段存地址（Write_Local_Name 未生效）。
+- 下一步：手机点板子配对（SSP 弹窗确认）→ link key → pan connect（跳过加密已实现）
+  → BNEP → bt-pan → 上网。详见 docs_ble/15_r52_r62_breakthrough.md。
