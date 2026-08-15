@@ -281,8 +281,7 @@ CONFIG_BT_RFCOMM=y
 # PAN (BNEP over BREDR) — 2026-08-15 BREDR 闸门0通过后启用:
 # 手机"蓝牙网络共享"(NAP) 配对后经 bt-pan 网卡代理上网
 CONFIG_BLUETOOTH_PAN=y
-CONFIG_BLUETOOTH_LOG=y
-CONFIG_BLUETOOTH_SERVICE_LOG_LEVEL=6
+# CONFIG_BLUETOOTH_LOG is not set (log_server needs KVDB property, conflicts with unqlite storage)
 
 # Official ai_agent framework (EXAMPLES_AI_AGENT_VELA)
 CONFIG_EXAMPLES_AI_AGENT_VELA=y
