@@ -25,3 +25,23 @@ defconfig：CONFIG_BT_DEBUG_LOG=y + CONFIG_BT_DEBUG_LOG_LEVEL=6（zblue 栈日�
 ## 目的
 
 定位 BR 配对中 Link_Key_Request 事件处理链（事件到 zblue 但 Neg_Reply 未发出的问题）。
+
+---
+
+## R53 追加：加密事件丢失三级诊断（2026-08-15 深夜）
+
+### nuttx/drivers/serial/uart_bth4.c（已提交 688aa576924）
+- uart_bth4_receive 的 circbuf 空间不足分支加 syslog：
+  `uart_bth4 rx dropped: circbuf full (type=%u len=%zu space=%u)`
+  —— circbuf 溢出时原本静默丢帧（-ENOMEM），这是 EncryptChange 帧丢失的候选根因。
+
+### apps(frameworks)/connectivity/bluetooth/service/stacks/zephyr/hci_h4.c（gitignored）
+- 增加 `#include <syslog.h>`
+- bt_sal_hci_transport_recv 每帧拆出后打印：
+  `[h4] frame type=0x%02x evt=0x%02x len=%d`
+- get_rx 返回 NULL 时打印：
+  `[h4] DROP frame type=0x%02x evt=0x%02x (no buf)`
+  —— BT_LOGD/BT_LOGE 均为 no-op（CONFIG_BLUETOOTH_SERVICE_LOG_LEVEL 未启用），原实现静默丢帧。
+
+### apps/external/zblue/.../host/hci_core.c（gitignored）
+- rx_work_handler 入口加：`[zblue] rx_work enter`
