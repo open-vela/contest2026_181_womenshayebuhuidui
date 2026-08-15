@@ -114,3 +114,36 @@
   ② 持久化方案（文件式 BR key store，port 层挂钩 bt_keys_link_key_store /
   bt_hci_link_key_req 加载）——突破后实现；③ 上网验证（镜像无 ping/dhcpc，
   需加 CONFIG_NETUTILS_PING 或静态 IP + 包计数）。
+
+## Round 4-4（2026-08-15 晚，可发现性根因与卡死真相）
+
+- 突破 18：**BR「可发现」失效根因 = Write_Scan_Enable 被 H4 驱动 emulate 吞掉**。
+  sf32lb52_bth4.c sf32lb52_bt_emulate_cmd() 把 WRITE_SCAN_ENABLE / WRITE_PAGE_SCAN_ACTIVITY /
+  WRITE_INQUIRY_SCAN_ACTIVITY / WRITE_INQUIRY_SCAN_TYPE / WRITE_PAGE_SCAN_TYPE /
+  WRITE_EIR / WRITE_LOCAL_NAME / WRITE_SSP_MODE / WRITE_CLASS_OF_DEVICE 等整套
+  BR 配置命令合成成功响应（不转发 LCPU）→ zblue 以为已设置，控制器实际没开
+  inquiry/page scan → 手机列表永远看不到板子（与设置 scanmode 无关，
+  adapter_set_scan_mode 缓存命中/EALREADY 静默，且从未有 HCI 命令发出）。
+  证据：set scanmode 2 时 bth4 trace 无任何 HCI；而 inquiry 命令（不 emulate）正常。
+- 突破 19：**Sifli 官方 SDK 证实 LCPU 支持 BR scan/PAN**：
+  docs.sifli.com SDK 的 BT PAN Example（sf32lb52x/example/bt/pan）：
+  「The example will enable Bluetooth Inquiry scan and page scan at startup, allowing
+  phones and other devices to discover and connect to this device」——手机网络共享开启后
+  PAN 自动连接，finsh 命令 pan_cmd conn_pan / weather / pan_cmd ota_pan（BT PAN 下载 OTA）。
+  官方示例同样需要手机开「蓝牙网络共享」，默认名 sifli_pan。
+- 突破 20：**BLE 广播失败根因 = bttool 的 adv type 语义**：`-t adv_ind` 是 ext 语义
+  （convert 强制 BT_LE_ADV_OPT_EXT_ADV），而控制器 LE 特性被 emulate 返回全 0
+  （LE_READ_LOCAL_FEATURES 合成全零）→ ext 不支持 → STACK_ERR(status:3)。
+  需 `-m legacy`（adv_mode=1 → adv_type += BT_LE_LEGACY_ADV_IND → legacy 路径）。
+- 突破 21：**系统卡死真相 = ai_agent 启动崩溃破坏 mm 锁**：
+  本会话「!ai_agent &」启动 ai_agent → 立即 assert（ai_agent_main → mallinfo →
+  mm_foreach assert，内存不足）→ 后续 bluetoothd 全部 IPC 无响应、串口静默
+  （bttool 卡在 system()/IPC）。与 adv 无关。教训：不要在 bttool 会话里启动 ai_agent。
+- 其它发现：bluetoothd 的 BT_LOGE 默认编译为空（CONFIG_BLUETOOTH_SERVICE_LOG_LEVEL
+  未定义）→ 需在 defconfig 开启才能看 SAL 诊断日志；ncmd_sem 机制（CC 响应 ncmd=0
+  不 give → 后续命令停摆）在 emulate 合成响应中 ncmd=1 正常。
+- 下一步（用户在场）：① 物理拔插 USB 重启（RTS 复位无效）；② 不要启动 ai_agent；
+  ③ `adv start -t adv_ind -m legacy -n Agent-Watch` 开 BLE 广播 → 手机配对(0000) →
+  ④ pan connect → 加密(link key 在 RAM) → BNEP → bt-pan → 上网；
+  ⑤ 备选：改 vendor bth4 移除 WRITE_SCAN_ENABLE emulate（BR 可发现，官方 SDK 证实
+  LCPU 支持），需重编译烧录。
