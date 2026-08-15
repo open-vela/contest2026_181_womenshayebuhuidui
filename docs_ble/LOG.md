@@ -81,3 +81,36 @@
   state:2 CONNECTED → 数据面。
 - 环境要点：手机「蓝牙网络共享」必须开启（否则手机直接断 ACL reason 0x13）；
   烧录用 logs/flash_rts.py + for 重试 2-3 次（RTS 时序不稳）。
+
+## Round 4-3（2026-08-15 深夜，加密关口根因定位）
+
+- 突破 17：**加密不完成的根因 = link key 不持久化**。
+  完整 HCI 解码（/tmp/pan_raw.log 17:45 trace）：
+  [pan] worker: request encryption
+  01 11 04 02 80 00        = Authentication_Requested (0x0411) h=0x0080
+  04 0f 04 00 ...          = CC status=0
+  04 16 06 a4 d1 fe b3 cc a4  = Link_Key_Request (0x16) —— 控制器无此设备密钥
+  01 0c 04 06 a4 d1 fe b3 cc a4  = Link_Key_Neg_Reply (0x040C) —— zblue RAM 也无密钥
+  [bttool] Pair Display [A4:CC:B3:FE:D1:A4][BREDR][PIN] please reply:
+  —— 降级 legacy PIN 配对，等控制台输 PIN（无人应答）
+  [pan] worker: timeout, L2CAP anyway → 未加密通道发 CONNECT_REQ → 手机拒绝
+- 根因链：zblue 的 BR link key 只存 RAM（br_key_pool，CONFIG_BT_MAX_PAIRED=1）；
+  持久化只在 CONFIG_BT_SETTINGS 下生效，而本移植（external/zblue port）没有
+  settings 子系统（port/subsys 无 settings）→ 每次重启密钥即失 → 每次连接都要
+  重新 legacy PIN 配对。控制器（LCPU 闭源固件）也不存 key，回 Link_Key_Request
+  向 host 要。
+- 对策（无需改代码即可验证）：**同一启动内先配对再 pan connect** —— 配对完成
+  后 zblue RAM 里有 key，Link_Key_Request 会被 16 字节 key 应答 → 加密完成 →
+  security_changed(level=2) → L2CAP → BNEP。zblue 路径已验证：
+  ssp.c bt_hci_link_key_req → conn->br.link_key || bt_keys_find_link_key() →
+  link_key_reply()；配对 store 点在 ssp.c:531 / smp.c:890。
+- 配对应答链路：bttool pair pin <addr> 1 0000 → bt_device_set_pin_code_async →
+  adapter_set_pin_code（要求 BOND_STATE_BONDING）→ bt_sal_pin_reply →
+  zblue zblue_pin_reply → bt_conn_auth_pincode_entry(conn,"0000")。
+- 板载 TAP 桥已完整：panu_service.c pan_tap_bridge_open("/dev/tun", IFF_TAP)
+  → "bt-pan" 网卡（MAC=本机 BT 地址）；BNEP FRAME_ETH ⇄ TAP 读写闭环
+  （pan_tap_poll_data → bt_sal_pan_write）。
+- 待办：① 配对成功后同启动内 pan connect，验证 encryption→BNEP→bt-pan；
+  ② 持久化方案（文件式 BR key store，port 层挂钩 bt_keys_link_key_store /
+  bt_hci_link_key_req 加载）——突破后实现；③ 上网验证（镜像无 ping/dhcpc，
+  需加 CONFIG_NETUTILS_PING 或静态 IP + 包计数）。

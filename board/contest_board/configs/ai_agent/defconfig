@@ -307,8 +307,4 @@ CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_LV_FONT_MONTSERRAT_32=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
 
-# PAN/BNEP over BREDR: Android NAP requires L2CAP MTU >= 1691 (BNEP std)
-# RX size must hold BNEP frames; TX stays at default 253 (zblue fragments
-# large PDUs itself - keeping the ACL TX pool small avoids BSS-layout
-# shift that corrupted the flash driver's buffers, observed 2026-08-15).
-CONFIG_BT_BUF_ACL_RX_SIZE=1700
+# TEMP: RX_SIZE back to default to test enable stability
