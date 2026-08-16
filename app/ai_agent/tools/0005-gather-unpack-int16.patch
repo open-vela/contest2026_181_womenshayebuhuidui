@@ -1,0 +1,36 @@
+diff --git a/tensorflow/lite/micro/kernels/gather.cc b/tensorflow/lite/micro/kernels/gather.cc
+index a0af4c0e..76b2bddb 100644
+--- a/tensorflow/lite/micro/kernels/gather.cc
++++ b/tensorflow/lite/micro/kernels/gather.cc
+@@ -132,6 +132,7 @@ TfLiteStatus GatherPrepare(TfLiteContext* context, TfLiteNode* node) {
+   switch (input->type) {
+     case kTfLiteFloat32:
+     case kTfLiteInt8:
++    case kTfLiteInt16:
+       break;
+     default:
+       MicroPrintf("Type '%s' is not supported by gather.",
+@@ -206,6 +207,9 @@ TfLiteStatus GatherEval(TfLiteContext* context, TfLiteNode* node) {
+       case kTfLiteInt8:
+         return Gather<int8_t, int32_t>(params, input, coords, output);
+         break;
++      case kTfLiteInt16:
++        return Gather<int16_t, int32_t>(params, input, coords, output);
++        break;
+       default:
+         MicroPrintf("Type '%s' is not supported by gather.",
+                     TfLiteTypeGetName(input->type));
+diff --git a/tensorflow/lite/micro/kernels/unpack.cc b/tensorflow/lite/micro/kernels/unpack.cc
+index 9ce16838..bc868e35 100644
+--- a/tensorflow/lite/micro/kernels/unpack.cc
++++ b/tensorflow/lite/micro/kernels/unpack.cc
+@@ -89,6 +89,9 @@ TfLiteStatus UnpackEval(TfLiteContext* context, TfLiteNode* node) {
+     case kTfLiteInt8: {
+       return UnpackImpl<int8_t>(context, node, input, data->num, data->axis);
+     }
++    case kTfLiteInt16: {
++      return UnpackImpl<int16_t>(context, node, input, data->num, data->axis);
++    }
+     default: {
+       MicroPrintf("Type '%s' is not supported by unpack.",
+                   TfLiteTypeGetName(input->type));

@@ -1,0 +1,16 @@
+diff --git a/tensorflow/lite/micro/compatibility.h b/tensorflow/lite/micro/compatibility.h
+index 49acb28f..33f9a207 100644
+--- a/tensorflow/lite/micro/compatibility.h
++++ b/tensorflow/lite/micro/compatibility.h
+@@ -23,8 +23,10 @@ limitations under the License.
+ // This macro needs to be included in all subclasses of a virtual base class in
+ // the private section.
+ #ifdef TF_LITE_STATIC_MEMORY
++// GCC 13+ 对 placement new 要求 operator delete 可访问 (否则编译失败),
++// 因此 delete 必须保持 public; 空实现避免链接全局 ::operator delete。
+ #define TF_LITE_REMOVE_VIRTUAL_DELETE \
+-  void operator delete(void* p) {}
++  public: void operator delete(void* p) {}
+ #else
+ #define TF_LITE_REMOVE_VIRTUAL_DELETE
+ #endif
