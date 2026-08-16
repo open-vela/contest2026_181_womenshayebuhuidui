@@ -28,8 +28,16 @@
 #include <lvgl/lvgl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include "pet_page.h"
+
+/* velaAI 端侧 TFLite Micro 语言模型 + 语音提问 (CONFIG_TFLITEMICRO 启用时) */
+#ifdef CONFIG_TFLITEMICRO
+#  include <pthread.h>
+#  include "../ai_lm.h"
+#  include "../speech/voice_question.h"
+#endif
 
 /****************************************************************************
  * Private Data
@@ -116,6 +124,18 @@ static int s_cloud_scale;          /* current scale (256 = 100%) */
 
 /* Touch reply auto-restore */
 static lv_timer_t *s_greet_timer;  /* restores the greeting after tap */
+
+#ifdef CONFIG_TFLITEMICRO
+/* ── 语音提问 (点击云朵 -> 录音 -> 识别 -> 本地模型回复) ── */
+static pthread_t s_lm_thread;
+static volatile int s_lm_busy;     /* 1 = 录音/生成中, 忽略新点击 */
+
+typedef struct
+{
+  char text[AI_LM_REPLY_MAX];
+  int  ok;                         /* 0 = 失败, 用默认话术 */
+} lm_tap_result_t;
+#endif
 
 /* Forward declarations */
 static void greeting_build(char *buf, size_t len);
@@ -246,8 +266,68 @@ static void greet_restore_timer_cb(lv_timer_t *timer)
     }
 }
 
+#ifdef CONFIG_TFLITEMICRO
 /**
- * Cloud tapped: bounce + quick blink + playful reply
+ * LVGL 线程 (lv_async_call): 应用模型生成的回复文本到气泡,
+ * 3 秒后恢复时段问候
+ */
+static void lm_tap_apply_async(void *data)
+{
+  lm_tap_result_t *r = (lm_tap_result_t *)data;
+
+  if (ai_text_label != NULL)
+    {
+      if (r->ok)
+        {
+          lv_label_set_text(ai_text_label, r->text);
+        }
+      else
+        {
+          /* 模型不可用/生成失败: 默认话术 */
+          lv_label_set_text(ai_text_label,
+                            "\xe5\x98\xbf\xef\xbc\x8c\xe6\x88\xb3\xe5\x88\xb0"
+                            "\xe6\x88\x91\xe4\xba\x86\xef\xbd\x9e\xe6\x98\xaf"
+                            "\xe5\xb0\x8f\xe4\xba\x91\xe5\x91\xa6\xef\xbc\x81");
+          /* 嘿，戳到我了～是小云哦！ */
+        }
+
+      if (s_greet_timer != NULL)
+        {
+          lv_timer_delete(s_greet_timer);
+        }
+
+      s_greet_timer = lv_timer_create(greet_restore_timer_cb, 3000, NULL);
+    }
+
+  free(r);
+}
+
+/**
+ * 后台线程: 语音提问 -> 本地 TFLM 模型回答 (不阻塞 LVGL 渲染)
+ */
+static void *lm_tap_worker(void *arg)
+{
+  lm_tap_result_t *r = (lm_tap_result_t *)arg;
+  char reply[AI_LM_REPLY_MAX];
+
+  r->ok = 0;
+  if (voice_question_ask(reply, sizeof(reply), 4) >= 0)
+    {
+      strncpy(r->text, reply, AI_LM_REPLY_MAX - 1);
+      r->text[AI_LM_REPLY_MAX - 1] = '\0';
+      r->ok = 1;
+    }
+
+  /* 结果交给 LVGL 线程显示 (3 秒后自动恢复问候) */
+  lv_async_call(lm_tap_apply_async, r);
+
+  s_lm_busy = 0;
+  return NULL;
+}
+#endif /* CONFIG_TFLITEMICRO */
+
+/**
+ * Cloud tapped: bounce + quick blink + local-model reply
  */
 static void on_cloud_clicked(lv_event_t *e)
 {
@@ -278,6 +358,42 @@ static void on_cloud_clicked(lv_event_t *e)
     /* Quick blink on tap */
     blink_start();
 
+#ifdef CONFIG_TFLITEMICRO
+    /* 本地模型生成回复 (异步, 生成中忽略新点击) */
+    if (!s_lm_busy)
+    {
+        lm_tap_result_t *r = malloc(sizeof(*r));
+
+        if (r != NULL)
+        {
+            s_lm_busy = 1;
+            r->text[0] = '\0';
+
+            /* 提示用户开始说话 (worker 完成后替换为回答) */
+            if (ai_text_label != NULL)
+            {
+                lv_label_set_text(ai_text_label,
+                                  "\xe6\x88\x91\xe5\x9c\xa8\xe5\x90\xac\xef\xbc\x8c"
+                                  "\xe8\xaf\xb7\xe8\xaf\xb4\xe5\x90\xa7\xef\xbd\x9e");
+                /* 我在听，请说吧～ */
+            }
+
+            {
+                pthread_attr_t attr;
+
+                pthread_attr_init(&attr);
+                pthread_attr_setstacksize(&attr, 16384);
+
+                if (pthread_create(&s_lm_thread, &attr, lm_tap_worker, r) != 0)
+                {
+                    free(r);
+                    s_lm_busy = 0;
+                }
+
+                pthread_attr_destroy(&attr);
+            }        }
+    }
+#else
     /* Playful reply in the AI text layer, restore greeting after 3s */
     if (ai_text_label != NULL)
     {
@@ -292,6 +408,7 @@ static void on_cloud_clicked(lv_event_t *e)
         }
         s_greet_timer = lv_timer_create(greet_restore_timer_cb, 3000, NULL);
     }
+#endif
 }
 
 /****************************************************************************

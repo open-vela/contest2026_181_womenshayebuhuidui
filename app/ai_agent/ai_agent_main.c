@@ -24,6 +24,12 @@
 #include "ui/pet_page.h"
 #include "ui/settings_page.h"
 
+/* velaAI 端侧 TFLite Micro 语言模型 (CONFIG_TFLITEMICRO 启用时) */
+#ifdef CONFIG_TFLITEMICRO
+#  include "ai_lm.h"
+#  include "speech/voice_question.h"
+#endif
+
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
@@ -179,20 +185,47 @@ static const char *ai_agent_find_response(const char *query)
  * Description:
  *   Process a single AI query and display the response.
  *
+ *   Primary engine: velaAI 端侧 TFLite Micro 语言模型 (ai_lm_reply)。
+ *   模型不可用或生成为空时, 回退到关键词表 (g_responses)。
+ *
  ****************************************************************************/
 
 static int ai_agent_query(const char *query)
 {
+#ifdef CONFIG_TFLITEMICRO
+  char reply[AI_LM_REPLY_MAX];
+#endif
   const char *response;
 
   printf("Thinking...\n");
 
+#ifdef CONFIG_TFLITEMICRO
+  /* 本地 TFLM 模型生成 (首次调用时惰性初始化) */
+  if (ai_lm_init() == 0)
+    {
+      if (ai_lm_reply(query, reply, sizeof(reply)) == 0)
+        {
+          response = reply;
+          pet_page_send_response(response);
+
+          printf("\n--- AI Response (local TFLM) ---\n");
+          printf("%s\n", response);
+          printf("--- End ---\n\n");
+          return 0;
+        }
+
+      printf("Local model reply empty, falling back to keywords\n");
+    }
+  else
+    {
+      printf("Local model unavailable, falling back to keywords\n");
+    }
+#else
   /* Simulate processing time */
-
   usleep(500000);  /* 0.5 second */
+#endif
 
-  /* Find response */
-
+  /* Fallback: keyword table */
   response = ai_agent_find_response(query);
 
   /* Display on pet page (if display enabled) */
@@ -280,6 +313,9 @@ static void ai_agent_show_usage(void)
   printf("Usage: ai_agent [options]\n"
          "  -h          : show this help\n"
          "  -q <query>  : send a query (opens pet page)\n"
+#ifdef CONFIG_TFLITEMICRO
+         "  -v          : voice question (mic -> local model, opens pet page)\n"
+#endif
          "  -n          : no display (skip LVGL init)\n"
          "  -i          : interactive mode (default)\n");
 }
@@ -308,10 +344,13 @@ int main(int argc, char *argv[])
   int opt;
   const char *query = NULL;
   bool no_display = false;
+#ifdef CONFIG_TFLITEMICRO
+  bool voice_mode = false;
+#endif
 
   /* Parse command line arguments */
 
-  while ((opt = getopt(argc, argv, "hq:n")) != -1)
+  while ((opt = getopt(argc, argv, "hq:nv")) != -1)
     {
       switch (opt)
         {
@@ -322,6 +361,12 @@ int main(int argc, char *argv[])
           case 'q':
             query = optarg;
             break;
+
+#ifdef CONFIG_TFLITEMICRO
+          case 'v':
+            voice_mode = true;
+            break;
+#endif
 
           case 'n':
             no_display = true;
@@ -355,6 +400,35 @@ int main(int argc, char *argv[])
     }
 
   /* Process based on mode */
+
+#ifdef CONFIG_TFLITEMICRO
+  if (voice_mode)
+    {
+      /* 语音提问: 麦克风 -> 命令识别 -> 本地模型 -> 桌宠气泡 */
+      char reply[AI_LM_REPLY_MAX];
+
+      printf("\nVoice mode: 请对着麦克风说出命令 (最长 4 秒)...\n");
+
+      ret = voice_question_ask(reply, sizeof(reply), 4);
+      if (ret < 0)
+        {
+          printf("Voice capture failed: %d\n", ret);
+        }
+      else
+        {
+          pet_page_send_response(reply);
+
+          printf("\n--- Voice Reply ---\n");
+          printf("%s\n", reply);
+          printf("--- End ---\n\n");
+        }
+
+      printf("\nDisplaying result for 6 seconds...\n");
+      sleep(6);
+      launcher_back_to_desktop();
+      return EXIT_SUCCESS;
+    }
+#endif
 
   if (query != NULL)
     {

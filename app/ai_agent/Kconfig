@@ -7,6 +7,11 @@ config EXAMPLES_AI_AGENT
 	---help---
 		Enable the AI Agent application with LVGL display support.
 
+		When TFLITEMICRO is also enabled, the app runs the velaAI 端侧
+		语言模型 (TFLite Micro 16x8 LSTM, model/velaai_lm_v3_16x8.tflite)
+		locally as the primary reply engine for the pet page; otherwise
+		it falls back to the built-in keyword table.
+
 if EXAMPLES_AI_AGENT
 
 config EXAMPLES_AI_AGENT_PROGNAME
@@ -18,9 +23,10 @@ config EXAMPLES_AI_AGENT_PROGNAME
 
 config EXAMPLES_AI_AGENT_STACKSIZE
 	int "AI Agent stack size"
-	default 32768
+	default 49152
 	---help---
-		The stack size for the AI Agent task (needs more for LVGL).
+		The stack size for the AI Agent task (needs more for LVGL + local
+		TFLite Micro tokenizer/generation frames).
 
 config EXAMPLES_AI_AGENT_PRIORITY
 	int "AI Agent priority"
@@ -29,3 +35,15 @@ config EXAMPLES_AI_AGENT_PRIORITY
 		The priority of the AI Agent task.
 
 endif # EXAMPLES_AI_AGENT
+
+config EXAMPLES_AUDIO_SETUP
+	bool "Audio Setup (SF32LB52 audcodec /dev/audio0)"
+	default n
+	depends on AUDIO
+	---help---
+		Register the SF32LB52 built-in audio codec (onboard MEMS MIC
+		capture) as the NuttX audio device /dev/audio0.
+		Run `audio_setup` once before using nxrecorder / ai_agent voice.
+
+		The driver uses the SiFli HAL (bf0_hal_audcodec_m) with DMA
+		capture (DMAC1_CH4, 16kHz/16bit/mono).
