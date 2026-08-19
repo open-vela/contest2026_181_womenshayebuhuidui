@@ -34,6 +34,12 @@ int mic_capture_start(void);
 int mic_capture_read(int16_t *buf, int max_bytes, int timeout_ms);
 
 /**
+ * 新会话开始时冲刷陈旧数据: 取空消息队列 + 丢弃 discard_ms 毫秒采集。
+ * 消除上一次会话停止瞬态/残留缓冲造成的假 VAD 触发。
+ */
+void mic_capture_flush(int discard_ms);
+
+/**
  * 停止并释放采集。
  */
 void mic_capture_stop(void);

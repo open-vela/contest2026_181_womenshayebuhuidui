@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
+#include <poll.h>
 
 /* LVGL headers */
 
@@ -29,6 +31,8 @@
 #  include "ai_lm.h"
 #  include "speech/voice_question.h"
 #endif
+
+#include "chat_log.h"
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -87,6 +91,7 @@ static int display_init(void)
 {
   lv_nuttx_result_t result;
   lv_nuttx_dsc_t info;
+  int attempt;
 
   printf("Initializing LVGL display...\n");
 
@@ -94,7 +99,20 @@ static int display_init(void)
 
   lv_init();
 
-  /* Initialize NuttX display driver */
+  /* Initialize NuttX display driver.
+   * 开机自启时 LCD 异步初始化 (lcd_async_init) 可能尚未注册 /dev/lcd0,
+   * 先等设备节点就绪再初始化 (黑屏问题的根因, 2026-08-16) */
+
+  for (attempt = 1; attempt <= 10; attempt++)
+    {
+      if (access("/dev/lcd0", F_OK) == 0 && access("/dev/input0", F_OK) == 0)
+        {
+          break;
+        }
+
+      printf("Waiting display devices (%d/10)...\n", attempt);
+      sleep(1);
+    }
 
   lv_nuttx_dsc_init(&info);
   info.fb_path = "/dev/lcd0";
@@ -200,14 +218,16 @@ static int ai_agent_query(const char *query)
   printf("Thinking...\n");
 
 #ifdef CONFIG_TFLITEMICRO
-  /* 本地 TFLM 模型生成 (首次调用时惰性初始化) */
+  /* 本地 TFLM 模型生成 (首次调用时惰性初始化);
+   * agent 模式: <call> 生成 -> 端侧执行器 -> <obs> -> <bot> 回复 */
   if (ai_lm_init() == 0)
     {
-      if (ai_lm_reply(query, reply, sizeof(reply)) == 0)
+      if (ai_lm_agent_reply(query, reply, sizeof(reply)) == 0)
         {
           response = reply;
           pet_page_send_response(response);
 
+          /* 对话日志只记板上的语音/触摸对话, 控制台调试查询不入档 */
           printf("\n--- AI Response (local TFLM) ---\n");
           printf("%s\n", response);
           printf("--- End ---\n\n");
@@ -242,29 +262,73 @@ static int ai_agent_query(const char *query)
 }
 
 /****************************************************************************
+ * Name: ai_agent_daemon_loop
+ *
+ * Description:
+ *   Daemon mode (-d): pure UI keep-alive loop, never touches stdin.
+ *   用于开机自启 (rcS 里 "ai_agent -d &"): 与 nsh 控制台完全共存。
+ *
+ ****************************************************************************/
+
+static int ai_agent_daemon_loop(void)
+{
+  printf("AI Agent daemon: UI running, touch the screen\n");
+
+  while (1)
+    {
+      lv_timer_handler();
+      usleep(20000);   /* 20ms = 50fps 上限, 空闲时 CPU 占用极低 */
+    }
+
+  return 0;
+}
+
+/****************************************************************************
  * Name: ai_agent_interactive
  *
  * Description:
- *   Interactive mode - accept queries from console.
+ *   Interactive mode - keep the LVGL UI alive (touch/animations) while also
+ *   accepting queries from the console.
+ *
+ *   关键: fgets 会一直阻塞, 阻塞期间 lv_timer_handler 不再被调用,
+ *   触摸/动画全部冻结 ("界面卡住无法点击" 的根因)。改用 poll 短超时,
+ *   每轮都驱动一次 LVGL, 控制台有输入才处理命令。
  *
  ****************************************************************************/
 
 static int ai_agent_interactive(void)
 {
   char input[AI_AGENT_MAX_INPUT_LEN];
+  struct pollfd pfd;
 
-  printf("\n=== AI Agent Interactive Mode ===\n");
-  printf("Type your questions or 'quit' to exit.\n");
-  printf("Try: hello, nuttx, vela, sifli, lcd, help\n\n");
+  printf("\n=== AI Agent UI running (touch the screen) ===\n");
+  printf("Console: type a question, 'quit' to exit.\n\n");
+
+  pfd.fd = STDIN_FILENO;
+  pfd.events = POLLIN;
 
   while (1)
     {
-      printf("%s", AI_AGENT_PROMPT);
-      fflush(stdout);
+      int ret = poll(&pfd, 1, 30);   /* 30ms 超时 */
 
-      /* Run LVGL while waiting for input */
+      /* 每轮驱动 LVGL: 触摸事件/动画/定时器持续处理 */
 
       lv_timer_handler();
+
+      if (ret < 0)
+        {
+          if (errno == EINTR)
+            {
+              continue;
+            }
+
+          break;   /* stdin 出错 (非控制台启动): 仅保持 UI */
+        }
+
+      if (ret == 0 || !(pfd.revents & POLLIN))
+        {
+          continue;   /* 无控制台输入, 继续 UI 循环 */
+        }
 
       /* Read input */
 
@@ -316,6 +380,7 @@ static void ai_agent_show_usage(void)
 #ifdef CONFIG_TFLITEMICRO
          "  -v          : voice question (mic -> local model, opens pet page)\n"
 #endif
+         "  -d          : daemon mode (UI only, no console; for boot rcS)\n"
          "  -n          : no display (skip LVGL init)\n"
          "  -i          : interactive mode (default)\n");
 }
@@ -344,13 +409,14 @@ int main(int argc, char *argv[])
   int opt;
   const char *query = NULL;
   bool no_display = false;
+  bool daemon_mode = false;
 #ifdef CONFIG_TFLITEMICRO
   bool voice_mode = false;
 #endif
 
   /* Parse command line arguments */
 
-  while ((opt = getopt(argc, argv, "hq:nv")) != -1)
+  while ((opt = getopt(argc, argv, "hq:nvd")) != -1)
     {
       switch (opt)
         {
@@ -368,6 +434,10 @@ int main(int argc, char *argv[])
             break;
 #endif
 
+          case 'd':
+            daemon_mode = true;
+            break;
+
           case 'n':
             no_display = true;
             break;
@@ -383,6 +453,8 @@ int main(int argc, char *argv[])
   printf("  Contest 2026 Team 181\n");
   printf("  With LVGL Desktop + Pet Display\n");
   printf("========================================\n\n");
+
+  chat_log_init();   /* 恢复 /data 上的历史对话 */
 
   /* Initialize display (unless -n is specified) */
 
@@ -400,6 +472,12 @@ int main(int argc, char *argv[])
     }
 
   /* Process based on mode */
+
+  if (daemon_mode)
+    {
+      /* 开机自启守护: 纯 UI 循环 (不碰 stdin), 触摸/语音全可用 */
+      return ai_agent_daemon_loop();
+    }
 
 #ifdef CONFIG_TFLITEMICRO
   if (voice_mode)
@@ -426,7 +504,9 @@ int main(int argc, char *argv[])
       printf("\nDisplaying result for 6 seconds...\n");
       sleep(6);
       launcher_back_to_desktop();
-      return EXIT_SUCCESS;
+
+      /* 不退出: 本进程是 LVGL 桌面宿主, 退出则界面冻结不可点击 */
+      return ai_agent_interactive();
     }
 #endif
 
@@ -444,13 +524,13 @@ int main(int argc, char *argv[])
       /* Return to desktop */
 
       launcher_back_to_desktop();
-    }
-  else
-    {
-      /* Default: enter interactive mode */
 
-      ret = ai_agent_interactive();
+      /* 不退出: 保持桌面/桌宠可交互 (触摸), 控制台 quit 可退出 */
+      return ai_agent_interactive();
     }
 
+  /* Default: enter interactive mode */
+
+  ret = ai_agent_interactive();
   return (ret == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }

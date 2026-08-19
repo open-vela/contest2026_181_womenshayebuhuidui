@@ -52,6 +52,7 @@ if(CONFIG_EXAMPLES_AI_AGENT)
     ${AI_AGENT_LOCAL_LM_DEPS}
     SRCS
     ai_agent_main.c
+    chat_log.c
     ui/launcher_page.c
     ui/pet_page.c
     ui/settings_page.c

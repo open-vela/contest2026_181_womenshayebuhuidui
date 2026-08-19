@@ -46,6 +46,8 @@
 /* DMA 循环缓冲: 半缓冲 = 2048 B = 64ms @ 16kHz/16bit/mono */
 #define SF32LB52_RX_BUF_SIZE        4096
 #define SF32LB52_RX_HALF            (SF32LB52_RX_BUF_SIZE / 2)
+#define SF32LB52_AUDIO_BUF_SIZE     4096   /* apb 大小 (与 mic_capture 一致) */
+#define SF32LB52_AUDIO_NUM_BUFS     8      /* apb 数量 (与 mic_capture 一致) */
 
 #define SF32LB52_AUDIO_DEFAULT_RATE 16000
 #define SF32LB52_AUDIO_DEFAULT_CHS  1
@@ -77,9 +79,19 @@ struct sf32lb52_audio_s
   sem_t rx_sem;                         /* ISR -> 工作线程 */
   pid_t worker;                         /* 采集工作线程 */
 
+  /* 诊断计数器 (采集无数据排查, 见开发记录 13) */
+  volatile uint32_t dbg_irq;            /* DMA ISR 进入次数 */
+  volatile uint32_t dbg_cplt;           /* 半/全传输回调次数 */
+  volatile uint32_t dbg_wake;           /* 工作线程唤醒次数 */
+
+  volatile int skip_events;             /* 启动后丢弃的前 N 个半缓冲事件
+                                            (ADC 使能瞬态满幅毛刺) */
+
   mutex_t pendlock;
   dq_queue_t pendq;                     /* 等待填充的 apb */
   struct ap_buffer_s *aux;              /* 正在填充的 apb */
+
+  volatile bool drain;                  /* 请求工作线程清空 pending 队列 */
 };
 
 /****************************************************************************
@@ -99,6 +111,8 @@ static int sf32lb52_audio_cancelbuffer(FAR struct audio_lowerhalf_s *dev,
 static int sf32lb52_audio_reserve(FAR struct audio_lowerhalf_s *dev);
 static int sf32lb52_audio_release(FAR struct audio_lowerhalf_s *dev);
 static int sf32lb52_audio_shutdown(FAR struct audio_lowerhalf_s *dev);
+static int sf32lb52_audio_ioctl(FAR struct audio_lowerhalf_s *dev,
+                                int cmd, unsigned long arg);
 
 /****************************************************************************
  * Private Data
@@ -115,6 +129,7 @@ static const struct audio_ops_s g_sf32lb52_audio_ops =
   .cancelbuffer  = sf32lb52_audio_cancelbuffer,
   .reserve       = sf32lb52_audio_reserve,
   .release       = sf32lb52_audio_release,
+  .ioctl         = sf32lb52_audio_ioctl,
 };
 
 static struct sf32lb52_audio_s g_audio;
@@ -132,6 +147,7 @@ void HAL_AUDCODEC_RxCpltCallback(AUDCODEC_HandleTypeDef *hacodec, int cid)
   (void)hacodec;
   (void)cid;
   priv->rx_half = 1;
+  priv->dbg_cplt++;
   nxsem_post(&priv->rx_sem);
 }
 
@@ -142,6 +158,7 @@ void HAL_AUDCODEC_RxHalfCpltCallback(AUDCODEC_HandleTypeDef *hacodec, int cid)
   (void)hacodec;
   (void)cid;
   priv->rx_half = 0;
+  priv->dbg_cplt++;
   nxsem_post(&priv->rx_sem);
 }
 
@@ -151,6 +168,7 @@ static int sf32lb52_audio_isr(int irq, FAR void *context, FAR void *arg)
 {
   struct sf32lb52_audio_s *priv = (struct sf32lb52_audio_s *)arg;
 
+  priv->dbg_irq++;
   HAL_DMA_IRQHandler(&priv->dma_rx);
   return OK;
 }
@@ -210,6 +228,25 @@ static void sf32lb52_audio_worker_impl(FAR struct sf32lb52_audio_s *priv)
   sf32lb52_audio_deliver(priv, half, SF32LB52_RX_HALF);
 }
 
+/* 清空 pending 队列并归还缓冲 — 只在 audcodec 工作线程上下文执行
+ * (与 deliver 同线程, 不会并发进入 audio 核心; 曾因在语音线程里
+ * drain 与交付路径撞锁导致 worker 永久卡死, 真机 wake=0, 08-16 修) */
+static void sf32lb52_audio_drain_pending(FAR struct sf32lb52_audio_s *priv)
+{
+  nxmutex_lock(&priv->pendlock);
+
+  while (!dq_empty(&priv->pendq))
+    {
+      FAR struct ap_buffer_s *apb;
+
+      apb = (FAR struct ap_buffer_s *)dq_remfirst(&priv->pendq);
+      priv->dev.upper(priv->dev.priv, AUDIO_CALLBACK_DEQUEUE, apb, OK);
+    }
+
+  nxmutex_unlock(&priv->pendlock);
+  priv->aux = NULL;
+}
+
 static int sf32lb52_audio_worker(int argc, FAR char *argv[])
 {
   FAR struct sf32lb52_audio_s *priv = &g_audio;
@@ -217,6 +254,23 @@ static int sf32lb52_audio_worker(int argc, FAR char *argv[])
   while (1)
     {
       nxsem_wait(&priv->rx_sem);
+      priv->dbg_wake++;
+
+      /* 停止采集的 drain 请求 (工作线程上下文执行) */
+      if (priv->drain)
+        {
+          priv->drain = false;
+          sf32lb52_audio_drain_pending(priv);
+          continue;
+        }
+
+      /* ADC 使能瞬态: 通路建立期间输出满幅毛刺 (真机实测首个半缓冲
+       * max=32750, 假能量触发 VAD), 丢弃前几个事件 */
+      if (priv->skip_events > 0)
+        {
+          priv->skip_events--;
+          continue;
+        }
 
       if (priv->recording)
         {
@@ -269,6 +323,49 @@ static int sf32lb52_audio_start_capture(FAR struct sf32lb52_audio_s *priv)
   /* 最后使能 ADC */
   __HAL_AUDCODEC_ADC_ENABLE(&priv->codec);
 
+  /* 丢弃使能瞬态 (前 4 个半缓冲事件 ~0.25s) */
+  priv->skip_events = 4;
+
+  /* 工作线程存活探测: post 一次, 20ms 内 dbg_wake 应递增;
+   * 无响应说明 worker 已卡死 (wake 停滞)。必须先杀旧线程再重建 —
+   * 若旧线程日后复活, 两个 worker 抢同一 pendq/aux 会互相偷缓冲,
+   * 数据黑洞 (真机 wake<cplt 与 wake>cplt 并存, 08-16) */
+  {
+    uint32_t w0 = priv->dbg_wake;
+
+    nxsem_post(&priv->rx_sem);
+    usleep(20000);
+
+    if (priv->dbg_wake == w0)
+      {
+        pid_t w;
+
+        printf("[mic] worker stalled, recreate (kill old first)\n");
+
+        if (priv->worker > 0)
+          {
+            nxtask_delete(priv->worker);
+            priv->worker = -1;
+          }
+
+        /* 清掉死线程留下的信号量残留计数 */
+        while (nxsem_trywait(&priv->rx_sem) >= 0)
+          {
+          }
+
+        w = kthread_create("audcodec_rx2", SF32LB52_AUDIO_WORKER_PRIO,
+                           SF32LB52_AUDIO_WORKER_STACK,
+                           sf32lb52_audio_worker, NULL);
+
+        if (w > 0)
+          {
+            priv->worker = w;
+          }
+
+        usleep(20000);
+      }
+  }
+
   priv->recording = true;
   return OK;
 }
@@ -283,21 +380,79 @@ static void sf32lb52_audio_stop_capture(FAR struct sf32lb52_audio_s *priv)
   priv->recording = false;
   up_disable_irq(AUDCODEC_ADC0_DMA_IRQ + NVIC_IRQ_FIRST);
   HAL_AUDCODEC_DMAStop(&priv->codec, HAL_AUDCODEC_ADC_CH0);
+
+  /* SDK 的 DMAStop 不清 State (源码中被注释), Receive_DMA 会一直
+   * HAL_BUSY -> 二次启动 EIO (真机 2026-08-16 实测), 此处补清 */
+  priv->codec.State[HAL_AUDCODEC_ADC_CH0] = HAL_AUDCODEC_STATE_READY;
+
   HAL_AUDCODEC_Close_Analog_ADCPath();
   __HAL_AUDCODEC_ADC_DISABLE(&priv->codec);
 
-  /* 清空 pending apb */
-  nxmutex_lock(&priv->pendlock);
-  while (!dq_empty(&priv->pendq))
-    {
-      FAR struct ap_buffer_s *apb;
+  priv->skip_events = 0;
 
-      apb = (FAR struct ap_buffer_s *)dq_remfirst(&priv->pendq);
-      priv->dev.upper(priv->dev.priv, AUDIO_CALLBACK_DEQUEUE, apb, OK);
+  /* 诊断: 采集计数 + 原始字流 dump */
+  {
+    const int16_t *s16 = (const int16_t *)priv->rx_buf;
+    int big = 0;
+    int mx = 0;
+
+    for (int i = 0; i < 512; i++)
+      {
+        int a = s16[i] < 0 ? -s16[i] : s16[i];
+
+        if (a > 20000)
+          {
+            big++;
+          }
+
+        if (a > mx)
+          {
+            mx = a;
+          }
+      }
+
+    printf("[mic-dbg] irq=%u cplt=%u wake=%u max16=%d big=%d\n",
+           (unsigned)priv->dbg_irq, (unsigned)priv->dbg_cplt,
+           (unsigned)priv->dbg_wake, mx, big);
+    printf("[mic-raw]");
+
+    for (int i = 0; i < 8; i++)
+      {
+        printf(" %04x", (uint16_t)s16[i]);
+      }
+
+    printf("\n");
+  }
+
+  priv->dbg_irq = priv->dbg_cplt = priv->dbg_wake = 0;
+
+  /* 清空 pending apb: 交给 audcodec 工作线程执行 (drain 标志 + 唤醒),
+   * 与交付路径同上下文, 避免并发进入 audio 核心 (曾致 worker 卡死) */
+  priv->drain = true;
+  nxsem_post(&priv->rx_sem);
+
+  for (int i = 0; i < 200 && priv->drain; i++)
+    {
+      usleep(1000);   /* 最多等 200ms */
     }
 
-  nxmutex_unlock(&priv->pendlock);
-  priv->aux = NULL;
+  if (priv->drain)
+    {
+      /* 工作线程无响应 (已卡死): 直接重置队列引用 (不再回调,
+       * 缓冲归用户进程释放); 清残留信号量计数; 下次 start 的
+       * 存活探测会 杀旧+重建 worker */
+      printf("[mic] drain timeout, worker dead\n");
+      dq_init(&priv->pendq);
+      priv->aux = NULL;
+      priv->drain = false;
+    }
+
+  /* 清信号量残留计数: 卡死/缓慢的 worker 未消费的 post 若不清,
+   * 下一会话会被陈旧唤醒轰炸 (wake 远大于 cplt), 且陈旧唤醒会
+   * 白白消耗 skip_events 与 drain 判定 */
+  while (nxsem_trywait(&priv->rx_sem) >= 0)
+    {
+    }
 }
 
 /* ── audio_ops_s 实现 ── */
@@ -434,9 +589,12 @@ static int sf32lb52_audio_configure(FAR struct audio_lowerhalf_s *dev,
 
   /* 16kHz 采样率时钟表 (PLL): {rate, clk_src_sel, clk_div, osr_sel,
    *  sel_clk_adc_source, sel_clk_adc, diva_clk_adc, fsp}
-   * 参考 SiFli SDK codec_adc_clk_config_pll[3] (16k 项) */
+   * 参考 SiFli SDK codec_adc_clk_config_pll[3] (16k 项)
+   * 注意: 结构体首字段是 samplerate, 早前版本漏写 16000 导致全体左移
+   * (clk_src_sel=10 非法, clk_div=1), ADC 时钟快约一个量级 (真机实测
+   * 半传输中断 ~1kHz, 应为 ~16Hz), 2026-08-16 修复 */
   static AUDCODE_ADC_CLK_CONFIG_TYPE adc_clk_16k =
-    { 1, 10, 1, 1, 0, 5, 2 };
+    { 16000, 1, 10, 1, 1, 0, 5, 2 };
 
   priv->codec.Init.adc_cfg.opmode = 1;
   priv->codec.Init.adc_cfg.adc_clk = &adc_clk_16k;
@@ -497,6 +655,33 @@ static int sf32lb52_audio_reserve(FAR struct audio_lowerhalf_s *dev)
   return OK;
 }
 
+/* NuttX audio 核心 AUDIOIOC_GETBUFFERINFO / SETBUFFERINFO / 未知命令
+ * 直接转发到 lower->ops->ioctl (audio.c:1257/1271/1294, 无 NULL 保护),
+ * 缺失该成员时 mic_capture 的 GETBUFFERINFO 会经 NULL 函数指针调用
+ * 触发 hard fault (真机 2026-08-16 实测崩溃点, 见开发记录 13 第九节)。 */
+static int sf32lb52_audio_ioctl(FAR struct audio_lowerhalf_s *dev,
+                                int cmd, unsigned long arg)
+{
+  FAR struct ap_buffer_info_s *binfo;
+
+  (void)dev;
+
+  switch (cmd)
+    {
+      case AUDIOIOC_GETBUFFERINFO:
+        binfo = (FAR struct ap_buffer_info_s *)arg;
+        binfo->buffer_size = SF32LB52_AUDIO_BUF_SIZE;
+        binfo->nbuffers    = SF32LB52_AUDIO_NUM_BUFS;
+        return OK;
+
+      case AUDIOIOC_SETBUFFERINFO:
+        return OK;   /* 接受, 但维持驱动默认缓冲配置 */
+
+      default:
+        return -ENOTTY;
+    }
+}
+
 static int sf32lb52_audio_release(FAR struct audio_lowerhalf_s *dev)
 {
   FAR struct sf32lb52_audio_s *priv = (FAR struct sf32lb52_audio_s *)dev;
@@ -540,9 +725,9 @@ int sf32lb52_audcodec_register(void)
   codec->Init.adc_cfg.opmode = 1;
   codec->Init.adc_cfg.adc_clk = NULL;   /* configure() 时按采样率设置 */
 
-  /* 默认 16kHz 时钟表 */
+  /* 默认 16kHz 时钟表 (同样补上 samplerate 首字段) */
   static AUDCODE_ADC_CLK_CONFIG_TYPE adc_clk_default =
-    { 1, 10, 1, 1, 0, 5, 2 };
+    { 16000, 1, 10, 1, 1, 0, 5, 2 };
   codec->Init.adc_cfg.adc_clk = &adc_clk_default;
   priv->samprate = SF32LB52_AUDIO_DEFAULT_RATE;
   priv->nchannels = SF32LB52_AUDIO_DEFAULT_CHS;

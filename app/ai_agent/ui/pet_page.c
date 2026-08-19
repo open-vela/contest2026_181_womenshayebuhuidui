@@ -15,12 +15,10 @@
  *   │ (20)                        │
  *   └──────────────────────────────┘
  *
- * Cloud behaviors:
- *  - Blink: middle frames are COMPUTED FROM THE PIXEL ARRAYS by linearly
- *    blending pet_cloud_open_px / pet_cloud_blink_px (see blend_frames()).
- *    The blink plays open -> 1/3 -> 2/3 -> closed -> 2/3 -> 1/3 -> open.
- *  - Touch: tapping the cloud bounces it (scale anim), triggers a quick
- *    blink and shows a playful reply in the AI text layer.
+ * Cloud behaviors (2026-08-16 精简):
+ *  - 动画已移除 (眨眼/弹跳在无 GPU 的 MCU 上重绘开销过大, 是卡顿来源)。
+ *  - Touch: 点击云朵 -> 语音提问 -> 本地模型回答显示在文字层;
+ *    生成中再点一次 = 打断推理立即释放 CPU。
  *
  * Team 181 - Contest 2026
  ****************************************************************************/
@@ -38,6 +36,8 @@
 #  include "../ai_lm.h"
 #  include "../speech/voice_question.h"
 #endif
+
+#include "../chat_log.h"
 
 /****************************************************************************
  * Private Data
@@ -58,12 +58,7 @@ extern const lv_font_t ui_font_cjk_18;  /* greeting text (CJK subset) */
 #define PET_CLOUD_STRIDE (PET_CLOUD_SIZE * 4)
 #define PET_CLOUD_WIDTH_PCT 70   /* cloud width = 70% of full page width */
 
-/* Blink timing */
-#define BLINK_PERIOD_MS 3200     /* idle time between blinks */
-#define BLINK_STEP_MS   70       /* per-frame time while blinking */
-#define BLINK_MID_FRAMES 2       /* computed intermediate frames */
-#define BLEND_1_3 85             /* 1/3 toward the blink frame */
-#define BLEND_2_3 171            /* 2/3 toward the blink frame */
+/* (动画已移除: 眨眼/弹跳在低端 MCU 上重绘开销过大, 且是卡顿来源) */
 
 /* Wallpaper image descriptor (same bitmap as the launcher desktop) */
 static const lv_image_dsc_t s_bg_dsc = {
@@ -114,137 +109,29 @@ static lv_obj_t *cloud_img;      /* layer 3: the cloud */
 static lv_obj_t *ai_text_label;  /* layer 2: AI returned text */
 static pet_back_callback_t back_callback = NULL;
 
-/* Blink state */
-static uint32_t *s_mid_frames[BLINK_MID_FRAMES];  /* computed pixel arrays */
-static lv_image_dsc_t s_mid_dsc[BLINK_MID_FRAMES];
-static lv_timer_t *s_blink_timer;  /* idle -> start a blink */
-static lv_timer_t *s_blink_step;   /* advances the blink frames */
-static int s_blink_phase;          /* 0 idle, 1..5 blinking, 6 back to open */
 static int s_cloud_scale;          /* current scale (256 = 100%) */
 
 /* Touch reply auto-restore */
 static lv_timer_t *s_greet_timer;  /* restores the greeting after tap */
 
-#ifdef CONFIG_TFLITEMICRO
-/* ── 语音提问 (点击云朵 -> 录音 -> 识别 -> 本地模型回复) ── */
-static pthread_t s_lm_thread;
-static volatile int s_lm_busy;     /* 1 = 录音/生成中, 忽略新点击 */
+/* 对话日志浮层 */
+static lv_obj_t *s_log_overlay;
 
-typedef struct
-{
-  char text[AI_LM_REPLY_MAX];
-  int  ok;                         /* 0 = 失败, 用默认话术 */
-} lm_tap_result_t;
+#ifdef CONFIG_TFLITEMICRO
+/* ── 语音提问 (点击云朵 -> 录音 -> 识别 -> 本地模型回复) ──
+ * 线程模型: worker 线程只写静态结果槽 + 置 ready 标志;
+ * UI 线程用 lv_timer 轮询消费。绝不从 worker 直接调任何 lv_* /
+ * lv_async_call (跨线程操作 LVGL 会破坏定时器链表 -> 卡死)。 */
+static volatile int s_lm_busy;     /* 1 = 录音/生成中 */
+static time_t s_busy_since;        /* busy 起始时刻 (看门狗) */
+static volatile int s_result_ready;/* worker 写完结果 */
+static char s_result_text[AI_LM_REPLY_MAX];
+static volatile int s_result_ok;
+static lv_timer_t *s_result_timer; /* UI 线程: 轮询 worker 结果 */
 #endif
 
 /* Forward declarations */
 static void greeting_build(char *buf, size_t len);
-
-/****************************************************************************
- * Array computation: pixel blending
- ****************************************************************************/
-
-/**
- * Linearly blend two ARGB8888 pixel arrays into dst.
- *
- * This is the "array computation" that synthesizes the in-between blink
- * frames: for every pixel of the 300x300 arrays,
- *   dst = a * (256 - f)/256 + b * f/256   (per channel, incl. alpha)
- *
- * @param dst  Output array (PET_CLOUD_SIZE^2 pixels)
- * @param a    First frame (open eyes)
- * @param b    Second frame (closed eyes)
- * @param f    Blend factor: 0 -> a, 256 -> b
- */
-static void blend_frames(uint32_t *dst, const uint32_t *a,
-                         const uint32_t *b, unsigned f)
-{
-    unsigned i;
-    unsigned n = PET_CLOUD_SIZE * PET_CLOUD_SIZE;
-    unsigned inv = 256 - f;
-
-    for (i = 0; i < n; i++)
-    {
-        uint32_t pa = a[i];
-        uint32_t pb = b[i];
-        unsigned ao = (((pa >> 24) & 0xff) * inv + ((pb >> 24) & 0xff) * f) >> 8;
-        unsigned ro = (((pa >> 16) & 0xff) * inv + ((pb >> 16) & 0xff) * f) >> 8;
-        unsigned go = (((pa >> 8) & 0xff) * inv + ((pb >> 8) & 0xff) * f) >> 8;
-        unsigned bo = ((pa & 0xff) * inv + (pb & 0xff) * f) >> 8;
-        dst[i] = (ao << 24) | (ro << 16) | (go << 8) | bo;
-    }
-}
-
-/****************************************************************************
- * Blink animation
- ****************************************************************************/
-
-/**
- * Switch the cloud bitmap to the given blink phase:
- *   0 -> open, 1 -> 1/3 closed, 2 -> 2/3 closed, 3 -> fully closed
- */
-static void cloud_frame_set(int phase)
-{
-    const lv_image_dsc_t *dsc;
-
-    switch (phase)
-    {
-    case 1:
-        dsc = &s_mid_dsc[0];
-        break;
-    case 2:
-        dsc = &s_mid_dsc[1];
-        break;
-    case 3:
-        dsc = &s_cloud_blink_dsc;
-        break;
-    default:
-        dsc = &s_cloud_open_dsc;
-        break;
-    }
-    lv_image_set_src(cloud_img, dsc);
-}
-
-/**
- * Advance the blink sequence: open -> 1/3 -> 2/3 -> closed -> 2/3 -> 1/3 -> open
- */
-static void blink_step_timer_cb(lv_timer_t *timer)
-{
-    (void)timer;
-    s_blink_phase++;
-    if (s_blink_phase > 5)
-    {
-        s_blink_phase = 0;
-        cloud_frame_set(0);
-        lv_timer_pause(s_blink_step);
-        return;
-    }
-    cloud_frame_set(s_blink_phase);
-}
-
-/**
- * Start one blink sequence
- */
-static void blink_start(void)
-{
-    if (cloud_img == NULL)
-    {
-        return;
-    }
-    s_blink_phase = 1;
-    cloud_frame_set(1);
-    lv_timer_reset(s_blink_step);
-    lv_timer_resume(s_blink_step);
-}
-
-/**
- * Idle timer: blink every BLINK_PERIOD_MS
- */
-static void blink_idle_timer_cb(lv_timer_t *timer)
-{
-    (void)timer;
-    blink_start();
-}
 
 /****************************************************************************
  * Touch interaction
@@ -268,22 +155,53 @@ static void greet_restore_timer_cb(lv_timer_t *timer)
 
 #ifdef CONFIG_TFLITEMICRO
 /**
- * LVGL 线程 (lv_async_call): 应用模型生成的回复文本到气泡,
- * 3 秒后恢复时段问候
+ * UI 线程 (lv_timer): 轮询 worker 结果槽, 应用到气泡, 3 秒后恢复问候。
+ * 页面被删除时此 timer 一并删除, 结果自然作废 — 无悬挂引用。
  */
-static void lm_tap_apply_async(void *data)
+static void lm_result_timer_cb(lv_timer_t *timer)
 {
-  lm_tap_result_t *r = (lm_tap_result_t *)data;
+  (void)timer;
+
+  /* 看门狗: worker 卡死 (任何未预期路径) 25s 后强制恢复可点击。
+   * 正常会话全程可达 ~20s (反应 2s + 说话 2s + 尾判定 0.4s +
+   * ASR 1s + LM 推理 9s + flush/适应期 1s + 余量), 15s 会与自然
+   * 完成赛跑造成误杀 (真机实测) */
+  if (s_lm_busy && !s_result_ready &&
+      time(NULL) - s_busy_since > 25)
+    {
+      printf("[pet] worker watchdog: force unbusy\n");
+      s_lm_busy = 0;
+      ai_lm_cancel();
+
+      if (ai_text_label != NULL)
+        {
+          lv_label_set_text(ai_text_label,
+                            "\xe5\x88\x9a\xe6\x89\x8d\xe5\x88\xb0\xe4\xba\x86"
+                            "\xe4\xb8\x80\xe7\x82\xb9\xe5\xb0\x8f\xe9\x97\xae"
+                            "\xe9\xa2\x98\xef\xbc\x8c\xe5\x86\x8d\xe8\xaf\x95"
+                            "\xe4\xb8\x80\xe6\xac\xa1\xef\xbc\x9f");
+          /* 刚遇到了一点小问题，再试一次？ */
+        }
+
+      return;
+    }
+
+  if (!s_result_ready)
+    {
+      return;
+    }
+
+  s_result_ready = 0;
 
   if (ai_text_label != NULL)
     {
-      if (r->ok)
+      if (s_result_ok)
         {
-          lv_label_set_text(ai_text_label, r->text);
+          lv_label_set_text(ai_text_label, s_result_text);
         }
       else
         {
-          /* 模型不可用/生成失败: 默认话术 */
+          /* 模型不可用/生成失败/被打断: 默认话术 */
           lv_label_set_text(ai_text_label,
                             "\xe5\x98\xbf\xef\xbc\x8c\xe6\x88\xb3\xe5\x88\xb0"
                             "\xe6\x88\x91\xe4\xba\x86\xef\xbd\x9e\xe6\x98\xaf"
@@ -298,100 +216,137 @@ static void lm_tap_apply_async(void *data)
 
       s_greet_timer = lv_timer_create(greet_restore_timer_cb, 3000, NULL);
     }
-
-  free(r);
 }
 
 /**
- * 后台线程: 语音提问 -> 本地 TFLM 模型回答 (不阻塞 LVGL 渲染)
+ * 后台线程: 语音提问 -> 本地 TFLM 模型回答;
+ * 全程不触碰 LVGL, 只写静态结果槽 + ready 标志。
+ * 中途被 UI 打断 (ai_lm_cancel) 时提前退出释放 CPU。
  */
 static void *lm_tap_worker(void *arg)
 {
-  lm_tap_result_t *r = (lm_tap_result_t *)arg;
   char reply[AI_LM_REPLY_MAX];
+  static const char *const chitchat[] = {
+    "\xe4\xbd\xa0\xe5\xa5\xbd",                     /* 你好 */
+    "\xe4\xbd\xa0\xe8\x83\xbd\xe5\x81\x9a\xe4\xbb\x80\xe4\xb9\x88", /* 你能做什么 */
+    "\xe4\xbd\xa0\xe6\x98\xaf\xe8\xb0\x81",         /* 你是谁 */
+  };
 
-  r->ok = 0;
+  (void)arg;
+
+  printf("[pet] worker enter\n");
+
+  /* 清上一次会话残留的取消标志, 否则新会话一进来就判"已取消",
+   * 秒回兜底文案 (真机: 无法复现"你好"对话的根因) */
+  ai_lm_cancel_clear();
+
+  s_result_ok = 0;
   if (voice_question_ask(reply, sizeof(reply), 4) >= 0)
     {
-      strncpy(r->text, reply, AI_LM_REPLY_MAX - 1);
-      r->text[AI_LM_REPLY_MAX - 1] = '\0';
-      r->ok = 1;
+      strncpy(s_result_text, reply, AI_LM_REPLY_MAX - 1);
+      s_result_text[AI_LM_REPLY_MAX - 1] = '\0';
+      s_result_ok = 1;
+
+      /* 语音问句已在 voice_question_ask 内记录, 此处记回复 */
+      chat_log_add(CHAT_LOG_ANSWER, s_result_text);
+    }
+  else if (!ai_lm_cancel_check() && ai_lm_init() == 0)
+    {
+      /* 语音链路失败: 用闲聊话术演示本地模型 */
+      int pick = (int)(time(NULL) & 0x7fffffff) %
+                 (int)(sizeof(chitchat) / sizeof(chitchat[0]));
+
+      chat_log_add(CHAT_LOG_ASK, chitchat[pick]);
+
+      if (ai_lm_agent_reply(chitchat[pick], reply, sizeof(reply)) == 0)
+        {
+          strncpy(s_result_text, reply, AI_LM_REPLY_MAX - 1);
+          s_result_text[AI_LM_REPLY_MAX - 1] = '\0';
+          s_result_ok = 1;
+
+          chat_log_add(CHAT_LOG_ANSWER, s_result_text);
+        }
     }
 
-  /* 结果交给 LVGL 线程显示 (3 秒后自动恢复问候) */
-  lv_async_call(lm_tap_apply_async, r);
+  /* 被打断的会话不写结果: UI 已显示"已打断"提示, 若在此再写结果
+   * 会被兜底文案覆盖 */
+  if (!ai_lm_cancel_check())
+    {
+      s_result_ready = 1;   /* 交给 UI 线程消费 */
+    }
 
   s_lm_busy = 0;
+  printf("[pet] worker exit\n");
   return NULL;
 }
 #endif /* CONFIG_TFLITEMICRO */
 
 /**
- * Cloud tapped: bounce + quick blink + local-model reply
+ * Cloud tapped: 语音提问 (本地模型回答);
+ * 生成中再点一次 = 打断当前推理立即释放 CPU
  */
 static void on_cloud_clicked(lv_event_t *e)
 {
-    lv_anim_t a;
-    lv_anim_t a2;
-
     (void)e;
     printf("[PetPage] Cloud tapped\n");
 
-    /* Bounce: scale up then back (squash & stretch) */
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, cloud_img);
-    lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)lv_image_set_scale);
-    lv_anim_set_values(&a, s_cloud_scale, s_cloud_scale + 44);
-    lv_anim_set_time(&a, 160);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-    lv_anim_start(&a);
-
-    lv_anim_init(&a2);
-    lv_anim_set_var(&a2, cloud_img);
-    lv_anim_set_exec_cb(&a2, (lv_anim_exec_xcb_t)lv_image_set_scale);
-    lv_anim_set_values(&a2, s_cloud_scale + 44, s_cloud_scale);
-    lv_anim_set_time(&a2, 280);
-    lv_anim_set_delay(&a2, 160);
-    lv_anim_set_path_cb(&a2, lv_anim_path_ease_in);
-    lv_anim_start(&a2);
-
-    /* Quick blink on tap */
-    blink_start();
-
 #ifdef CONFIG_TFLITEMICRO
-    /* 本地模型生成回复 (异步, 生成中忽略新点击) */
-    if (!s_lm_busy)
+    if (s_lm_busy)
     {
-        lm_tap_result_t *r = malloc(sizeof(*r));
+        /* 打断: 逐 token 检查的推理立即中止, CPU 交还 UI */
+        ai_lm_cancel();
 
-        if (r != NULL)
+        if (ai_text_label != NULL)
         {
-            s_lm_busy = 1;
-            r->text[0] = '\0';
+            lv_label_set_text(ai_text_label,
+                              "\xe5\xb7\xb2\xe6\x89\x93\xe6\x96\xad\xef\xbc\x8c"
+                              "\xe5\x86\x8d\xe7\x82\xb9\xe4\xb8\x80\xe6\xac\xa1"
+                              "\xe9\x87\x8d\xe6\x96\xb0\xe6\x8f\x90\xe9\x97\xae");
+            /* 已打断，再点一次重新提问 */
+        }
 
-            /* 提示用户开始说话 (worker 完成后替换为回答) */
-            if (ai_text_label != NULL)
+        return;
+    }
+
+    {
+        pthread_attr_t attr;
+        struct sched_param sp;
+
+        s_lm_busy = 1;
+        s_busy_since = time(NULL);
+        s_result_ready = 0;
+
+        /* 提示用户开始说话 (worker 完成后替换为回答) */
+        if (ai_text_label != NULL)
+        {
+            lv_label_set_text(ai_text_label,
+                              "\xe6\x88\x91\xe5\x9c\xa8\xe5\x90\xac\xef\xbc\x8c"
+                              "\xe8\xaf\xb7\xe8\xaf\xb4\xe5\x90\xa7\xef\xbd\x9e");
+            /* 我在听，请说吧～ */
+        }
+
+        pthread_attr_init(&attr);
+
+        /* 栈要容得下 ASR+LM 推理 (TFLM 工作集); 16KB 会溢出 */
+        pthread_attr_setstacksize(&attr, 49152);
+
+        /* 优先级低于 UI 线程 (100): 推理期间 UI 可抢占保持流畅 */
+        sp.sched_priority = 150;
+        pthread_attr_setschedparam(&attr, &sp);
+
+        /* detach: 无需 join, 结束自动回收 (避免线程资源泄漏) */
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+
+        {
+            pthread_t tid;
+
+            if (pthread_create(&tid, &attr, lm_tap_worker, NULL) != 0)
             {
-                lv_label_set_text(ai_text_label,
-                                  "\xe6\x88\x91\xe5\x9c\xa8\xe5\x90\xac\xef\xbc\x8c"
-                                  "\xe8\xaf\xb7\xe8\xaf\xb4\xe5\x90\xa7\xef\xbd\x9e");
-                /* 我在听，请说吧～ */
+                s_lm_busy = 0;
             }
+        }
 
-            {
-                pthread_attr_t attr;
-
-                pthread_attr_init(&attr);
-                pthread_attr_setstacksize(&attr, 16384);
-
-                if (pthread_create(&s_lm_thread, &attr, lm_tap_worker, r) != 0)
-                {
-                    free(r);
-                    s_lm_busy = 0;
-                }
-
-                pthread_attr_destroy(&attr);
-            }        }
+        pthread_attr_destroy(&attr);
     }
 #else
     /* Playful reply in the AI text layer, restore greeting after 3s */
@@ -409,6 +364,140 @@ static void on_cloud_clicked(lv_event_t *e)
         s_greet_timer = lv_timer_create(greet_restore_timer_cb, 3000, NULL);
     }
 #endif
+}
+
+/****************************************************************************
+ * 对话日志浮层
+ ****************************************************************************/
+
+/**
+ * Close the log overlay
+ */
+static void on_log_close_clicked(lv_event_t *e)
+{
+    (void)e;
+
+    if (s_log_overlay != NULL)
+    {
+        lv_obj_del(s_log_overlay);
+        s_log_overlay = NULL;
+    }
+}
+
+/**
+ * Open the conversation log overlay (full screen, newest entry first)
+ */
+static void on_log_clicked(lv_event_t *e)
+{
+    lv_obj_t *head;
+    lv_obj_t *title;
+    lv_obj_t *close_btn;
+    lv_obj_t *close_label;
+    lv_obj_t *list;
+    char line[192];
+    int n;
+    int i;
+
+    (void)e;
+
+    if (s_log_overlay != NULL)
+    {
+        return;   /* 已打开 */
+    }
+
+    /* 挂在页面容器下 (随页面删除, 不会残留到桌面); 忽略 flex 布局 */
+    s_log_overlay = lv_obj_create(pet_page_container);
+    lv_obj_add_flag(s_log_overlay, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_set_size(s_log_overlay, 390, 450);
+    lv_obj_set_pos(s_log_overlay, 0, 0);
+    lv_obj_set_style_bg_color(s_log_overlay, lv_color_hex(0xf7f7f4), 0);
+    lv_obj_set_style_bg_opa(s_log_overlay, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_log_overlay, 0, 0);
+    lv_obj_set_style_pad_all(s_log_overlay, 16, 0);
+    lv_obj_set_layout(s_log_overlay, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(s_log_overlay, LV_FLEX_FLOW_COLUMN);
+
+    /* ── 标题行: "对话日志" + 关闭按钮 ── */
+    head = lv_obj_create(s_log_overlay);
+    lv_obj_set_width(head, lv_pct(100));
+    lv_obj_set_height(head, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(head, LV_OPA_0, 0);
+    lv_obj_set_style_border_width(head, 0, 0);
+    lv_obj_set_style_pad_all(head, 0, 0);
+    lv_obj_set_layout(head, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_SPACE_BETWEEN);
+
+    title = lv_label_create(head);
+    lv_label_set_text(title, "\xe5\xaf\xb9\xe8\xaf\x9d\xe6\x97\xa5\xe5\xbf\x97");
+    /* 对话日志 */
+    lv_obj_set_style_text_font(title, &ui_font_cjk_18, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0x2b2b2b), 0);
+
+    close_btn = lv_btn_create(head);
+    lv_obj_set_size(close_btn, 72, 44);
+    lv_obj_set_style_bg_color(close_btn, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_bg_opa(close_btn, LV_OPA_70, 0);
+    lv_obj_set_style_border_width(close_btn, 0, 0);
+    lv_obj_set_style_radius(close_btn, 22, 0);
+
+    close_label = lv_label_create(close_btn);
+    lv_label_set_text(close_label, "\xe8\xbf\x94\xe5\x9b\x9e");
+    /* 返回 */
+    lv_obj_set_style_text_font(close_label, &ui_font_cjk_18, 0);
+    lv_obj_set_style_text_color(close_label, lv_color_hex(0x2b2b2b), 0);
+    lv_obj_center(close_label);
+
+    lv_obj_add_event_cb(close_btn, on_log_close_clicked,
+                        LV_EVENT_CLICKED, NULL);
+
+    /* ── 滚动列表: 最新在最上 ── */
+    list = lv_obj_create(s_log_overlay);
+    lv_obj_set_width(list, lv_pct(100));
+    lv_obj_set_flex_grow(list, 1);
+    lv_obj_set_style_bg_opa(list, LV_OPA_0, 0);
+    lv_obj_set_style_border_width(list, 0, 0);
+    lv_obj_set_style_pad_all(list, 0, 0);
+    lv_obj_set_layout(list, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+
+    n = chat_log_count();
+
+    for (i = 0; i < n; i++)
+    {
+        lv_obj_t *lbl;
+
+        if (chat_log_get(i, line, sizeof(line)) != 0)
+        {
+            break;
+        }
+
+        lbl = lv_label_create(list);
+        lv_label_set_text(lbl, line);
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(lbl, lv_pct(100));
+        lv_obj_set_style_text_font(lbl, &ui_font_cjk_18, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(0x3a3a3a), 0);
+        lv_obj_set_style_margin_top(lbl, 8, 0);
+    }
+
+    if (n == 0)
+    {
+        lv_obj_t *empty = lv_label_create(list);
+
+        lv_label_set_text(empty,
+                          "\xe6\x9a\x82\xe6\x97\xa0\xe5\xaf\xb9\xe8\xaf\x9d"
+                          "\xe8\xae\xb0\xe5\xbd\x95");
+        /* 暂无对话记录 */
+        lv_obj_set_style_text_font(empty, &ui_font_cjk_18, 0);
+        lv_obj_set_style_text_color(empty, lv_color_hex(0x999999), 0);
+        lv_obj_set_style_margin_top(empty, 24, 0);
+    }
+
+    printf("[PetPage] Log overlay opened (%d entries)\n", n);
 }
 
 /****************************************************************************
@@ -433,31 +522,27 @@ static void on_back_clicked(lv_event_t *e)
  */
 static void pet_cleanup(void)
 {
-    int i;
+#ifdef CONFIG_TFLITEMICRO
+    /* 离开页面: 打断仍在跑的推理, 删除结果轮询定时器
+     * (worker 之后写的结果槽无人消费, 自然作废, 无悬挂引用) */
+    ai_lm_cancel();
 
-    if (s_blink_timer != NULL)
+    if (s_result_timer != NULL)
     {
-        lv_timer_delete(s_blink_timer);
-        s_blink_timer = NULL;
+        lv_timer_delete(s_result_timer);
+        s_result_timer = NULL;
     }
-    if (s_blink_step != NULL)
-    {
-        lv_timer_delete(s_blink_step);
-        s_blink_step = NULL;
-    }
+#endif
+
     if (s_greet_timer != NULL)
     {
         lv_timer_delete(s_greet_timer);
         s_greet_timer = NULL;
     }
-    for (i = 0; i < BLINK_MID_FRAMES; i++)
-    {
-        if (s_mid_frames[i] != NULL)
-        {
-            free(s_mid_frames[i]);
-            s_mid_frames[i] = NULL;
-        }
-    }
+
+    /* 日志浮层随页面容器一起删除, 仅清指针 */
+    s_log_overlay = NULL;
+
     cloud_img = NULL;
     ai_text_label = NULL;
 }
@@ -533,26 +618,8 @@ lv_obj_t *pet_page_create(void)
     char greeting[64];
     int full_w;
     lv_coord_t cloud_w;
-    int i;
 
     printf("[PetPage] Creating pet display page\n");
-
-    /* Compute the middle blink frames from the pixel arrays (once) */
-    for (i = 0; i < BLINK_MID_FRAMES; i++)
-    {
-        if (s_mid_frames[i] == NULL)
-        {
-            s_mid_frames[i] = malloc(PET_CLOUD_SIZE * PET_CLOUD_STRIDE);
-            if (s_mid_frames[i] != NULL)
-            {
-                blend_frames(s_mid_frames[i], pet_cloud_open_px,
-                             pet_cloud_blink_px,
-                             i == 0 ? BLEND_1_3 : BLEND_2_3);
-                s_mid_dsc[i] = s_cloud_open_dsc;
-                s_mid_dsc[i].data = (const uint8_t *)s_mid_frames[i];
-            }
-        }
-    }
 
     /* Create pet page container: full-screen, launcher wallpaper */
     pet_page_container = lv_obj_create(lv_scr_act());
@@ -601,6 +668,32 @@ lv_obj_t *pet_page_create(void)
 
     lv_obj_add_event_cb(back_btn, on_back_clicked, LV_EVENT_CLICKED, NULL);
 
+    /* ── 日志按钮 (与返回按钮同行) ── */
+    {
+        lv_obj_t *log_btn = lv_btn_create(row1);
+        lv_obj_t *log_label;
+
+        lv_obj_set_size(log_btn, 88, 60);
+        lv_obj_set_style_bg_color(log_btn, lv_color_hex(0xffffff), 0);
+        lv_obj_set_style_bg_opa(log_btn, LV_OPA_50, LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(log_btn, 0, LV_STATE_DEFAULT);
+        lv_obj_set_style_border_width(log_btn, 0, LV_STATE_PRESSED);
+        lv_obj_set_style_border_width(log_btn, 0, LV_STATE_FOCUSED);
+        lv_obj_set_style_border_width(log_btn, 0, LV_STATE_FOCUS_KEY);
+        lv_obj_set_style_radius(log_btn, 30, 0);
+        lv_obj_set_style_margin_left(log_btn, 12, 0);
+
+        log_label = lv_label_create(log_btn);
+        lv_label_set_text(log_label,
+                          "\xe6\x97\xa5\xe5\xbf\x97");   /* 日志 */
+        lv_obj_set_style_text_font(log_label, &ui_font_cjk_18, 0);
+        lv_obj_set_style_text_color(log_label, lv_color_hex(0x2b2b2b), 0);
+        lv_obj_center(log_label);
+
+        lv_obj_add_event_cb(log_btn, on_log_clicked,
+                            LV_EVENT_CLICKED, NULL);
+    }
+
     /* ── 第二层：AI 返回的文字（默认按时段问候） ── */
     greeting_build(greeting, sizeof(greeting));
     ai_text_label = lv_label_create(pet_page_container);
@@ -633,14 +726,14 @@ lv_obj_t *pet_page_create(void)
     lv_image_set_scale(cloud_img, s_cloud_scale);
     lv_obj_set_size(cloud_img, cloud_w, cloud_w); /* square bitmap: h = w */
 
-    /* 触摸交互：点击云朵 -> 弹跳 + 眨眼 + 文字回应 */
+    /* 触摸交互：点击云朵 -> 语音提问 (本地模型回答) */
     lv_obj_add_flag(cloud_img, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(cloud_img, on_cloud_clicked, LV_EVENT_CLICKED, NULL);
 
-    /* 眨眼：idle timer 触发，step timer 推进中间帧 */
-    s_blink_step = lv_timer_create(blink_step_timer_cb, BLINK_STEP_MS, NULL);
-    lv_timer_pause(s_blink_step);
-    s_blink_timer = lv_timer_create(blink_idle_timer_cb, BLINK_PERIOD_MS, NULL);
+#ifdef CONFIG_TFLITEMICRO
+    /* UI 线程结果轮询 (worker 只写结果槽, 不触碰 LVGL) */
+    s_result_timer = lv_timer_create(lm_result_timer_cb, 100, NULL);
+#endif
 
     printf("[PetPage] Pet display page created successfully\n");
     return pet_page_container;
