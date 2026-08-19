@@ -30,6 +30,7 @@ MODULE    = $(CONFIG_EXAMPLES_AI_AGENT)
 # Source files
 
 CSRCS = ai_agent_main.c
+CSRCS += chat_log.c
 CSRCS += ui/launcher_page.c
 CSRCS += ui/pet_page.c
 CSRCS += ui/settings_page.c

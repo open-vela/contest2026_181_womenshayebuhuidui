@@ -60,6 +60,37 @@ int ai_lm_generate(const int32_t *prompt, int n_prompt,
  */
 int ai_lm_reply(const char *user_text, char *reply, int reply_size);
 
+/**
+ * Agent 模式 (两段式, 与 velaAI 训练数据格式一致):
+ *   1. "<usr> {text}" -> 模型生成 "<call> tool <arg>.. </tool>" (或直接闲聊回复)
+ *   2. 端侧执行器 (设备状态表 / RTC / 模拟传感器) 产出 <obs> 值
+ *   3. "<usr> {text} <call>.. </tool> <obs> {obs}" -> 模型生成 "<bot>" 回复
+ *   4. 槽位校验: 回复须包含调用的房间/数值参数; 不通过则用与训练模板
+ *      一致的确定性回复兜底 (16x8 量化模型的槽位复制易错, 应用层保证正确性)
+ *
+ * @param user_text   用户输入 (UTF-8)
+ * @param reply       输出回复文本缓冲 (>= AI_LM_REPLY_MAX)
+ * @param reply_size  reply 容量
+ * @return 0 成功, -1 失败 (调用方回退关键词表)
+ */
+int ai_lm_agent_reply(const char *user_text, char *reply, int reply_size);
+
+/**
+ * 中途打断: 请求取消正在进行的推理 (逐 token 检查, 立即释放 CPU)。
+ * 下一次 ai_lm_reply / ai_lm_agent_reply 开始时会自动清标志。
+ */
+void ai_lm_cancel(void);
+
+/**
+ * 清除取消标志 (新请求开始时调用, 避免上一次的取消毒化新会话)。
+ */
+void ai_lm_cancel_clear(void);
+
+/**
+ * 查询是否有取消请求 (语音监听循环等长循环可据此提前退出)。
+ */
+int ai_lm_cancel_check(void);
+
 #ifdef __cplusplus
 }
 #endif

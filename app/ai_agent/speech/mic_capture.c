@@ -37,6 +37,11 @@ static mqd_t s_mq = (mqd_t)-1;
 static struct ap_buffer_s **s_bufs = NULL;
 static int s_nbufs = 0;
 
+/* 当前正在消费的 apb 与偏移 (一次 read 只取部分时, 下次继续,
+ * 避免 4096B 缓冲只取 640B 就归还, 丢弃 84% 音频) */
+static struct ap_buffer_s *s_cur = NULL;
+static int s_cur_off = 0;
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -72,6 +77,15 @@ static int mic_alloc_buffers(int nbufs, int bytes)
           sizeof(desc))
         {
           return -EIO;
+        }
+
+      /* apb 来自 kmm 分配, 内容是堆残留; 首个缓冲若带垃圾会以假能量
+       * 触发 VAD (真机实测 rms~10k 恒定假 onset), 清零消除 */
+      if (s_bufs[i] != NULL)
+        {
+          memset(s_bufs[i]->samp, 0, s_bufs[i]->nmaxbytes);
+          s_bufs[i]->nbytes = 0;
+          s_bufs[i]->curbyte = 0;
         }
     }
 
@@ -121,18 +135,24 @@ int mic_capture_start(void)
       return 0;   /* 已启动 */
     }
 
-  s_fd = open(MIC_DEV_PATH, O_RDONLY);
+  /* O_RDWR: 与 nxrecorder 一致 (内核 file_mq_send 要向我们的 mq 写,
+   * O_RDONLY 的 mq 会静默收不到 DEQUEUE 消息) */
+  s_fd = open(MIC_DEV_PATH, O_RDWR);
   if (s_fd < 0)
     {
       printf("[mic] open %s failed: %d\n", MIC_DEV_PATH, errno);
       return -errno;
     }
 
+  printf("[mic] opened, RESERVE...\n");
+
   if (ioctl(s_fd, AUDIOIOC_RESERVE) < 0)
     {
       ret = -errno;
       goto err_close;
     }
+
+  printf("[mic] reserved, CONFIGURE...\n");
 
   /* CONFIGURE: 16kHz/16bit/单声道 */
   memset(&cap_desc, 0, sizeof(cap_desc));
@@ -150,11 +170,11 @@ int mic_capture_start(void)
       goto err_reserve;
     }
 
-  /* 消息队列 (收 apb 完成通知) */
+  /* 消息队列 (收 apb 完成通知; O_RDWR: 内核要向其 mq_send, 只读打不开) */
   attr.mq_maxmsg = 16;
   attr.mq_msgsize = MIC_MQ_MSG_SIZE;
   attr.mq_flags = 0;
-  s_mq = mq_open(MIC_MQ_NAME, O_CREAT | O_RDONLY, 0644, &attr);
+  s_mq = mq_open(MIC_MQ_NAME, O_CREAT | O_RDWR, 0644, &attr);
   if (s_mq == (mqd_t)-1)
     {
       ret = -errno;
@@ -166,6 +186,8 @@ int mic_capture_start(void)
       ret = -errno;
       goto err_mq;
     }
+
+  printf("[mic] mq registered, buffers...\n");
 
   /* 缓冲区 */
   memset(&binfo, 0, sizeof(binfo));
@@ -181,6 +203,8 @@ int mic_capture_start(void)
       goto err_mq;
     }
 
+  printf("[mic] %d buffers alloc'd, enqueue...\n", s_nbufs);
+
   for (i = 0; i < s_nbufs; i++)
     {
       if (mic_enqueue(s_bufs[i]) < 0)
@@ -189,6 +213,8 @@ int mic_capture_start(void)
           goto err_bufs;
         }
     }
+
+  printf("[mic] enqueued, START...\n");
 
   if (ioctl(s_fd, AUDIOIOC_START) < 0)
     {
@@ -214,11 +240,55 @@ err_close:
   return ret;
 }
 
+/* 冲刷陈旧数据: 上一次会话停止后, 驱动侧 drain 与 DMA 尾巴可能仍向
+ * 消息队列投递残留缓冲 (含满幅停止瞬态)。新会话开始时先取空队列、
+ * 再丢弃 0.3s 采集, 保证适应期读到的是真实环境音 (否则底噪=0,
+ * 阈值退化为下限, 残留毛刺照样假触发 onset)。 */
+void mic_capture_flush(int discard_ms)
+{
+  struct audio_msg_s msg;
+  struct timespec ts;
+  int flush_frames = discard_ms / 20;   /* 每帧 20ms */
+
+  if (s_fd < 0)
+    {
+      return;
+    }
+
+  /* 1) 取空消息队列 — 必须用零超时 (非阻塞尝试):
+   * NuttX 的 mq_receive 是阻塞语义, 空队列上会永久挂起
+   * (真机: 打断后队列恰为空, worker 卡死在 flush, busy 永卡) */
+  ts.tv_sec = 0;
+  ts.tv_nsec = 0;
+
+  while (mq_timedreceive(s_mq, (char *)&msg, MIC_MQ_MSG_SIZE,
+                         NULL, &ts) >= 0)
+    {
+      if (msg.msg_id == AUDIO_MSG_DEQUEUE && msg.u.ptr != NULL)
+        {
+          /* 标记消费完并归还, 防止驱动 pendq 积压 */
+          struct ap_buffer_s *apb = msg.u.ptr;
+
+          apb->nbytes = apb->curbyte;
+          mic_enqueue(apb);
+        }
+    }
+
+  /* 2) 丢弃 0.3s 新采集 (每 20ms 一帧) */
+  {
+    static int16_t discard_buf[320];
+
+    for (int i = 0; i < flush_frames; i++)
+      {
+        mic_capture_read(discard_buf, sizeof(discard_buf), 100);
+      }
+  }
+}
+
 int mic_capture_read(int16_t *buf, int max_bytes, int timeout_ms)
 {
   struct audio_msg_s msg;
   struct timespec ts;
-  struct ap_buffer_s *apb;
   ssize_t n;
   int copied = 0;
 
@@ -229,6 +299,31 @@ int mic_capture_read(int16_t *buf, int max_bytes, int timeout_ms)
 
   while (copied < max_bytes)
     {
+      /* 先消费上一个未取完的 apb */
+      if (s_cur != NULL)
+        {
+          int avail = (int)s_cur->nbytes - s_cur_off;
+          int take = max_bytes - copied;
+
+          if (take > avail)
+            {
+              take = avail;
+            }
+
+          memcpy((uint8_t *)buf + copied, s_cur->samp + s_cur_off, take);
+          copied += take;
+          s_cur_off += take;
+
+          if (s_cur_off >= (int)s_cur->nbytes)
+            {
+              mic_enqueue(s_cur);   /* 消费完, 归还缓冲 */
+              s_cur = NULL;
+              s_cur_off = 0;
+            }
+
+          continue;
+        }
+
       if (timeout_ms > 0)
         {
           clock_gettime(CLOCK_REALTIME, &ts);
@@ -263,26 +358,13 @@ int mic_capture_read(int16_t *buf, int max_bytes, int timeout_ms)
           continue;
         }
 
-      apb = msg.u.ptr;
-      if (apb == NULL)
+      s_cur = msg.u.ptr;
+      s_cur_off = 0;
+
+      if (s_cur == NULL)
         {
           continue;
         }
-
-      if (copied + (int)apb->nbytes <= max_bytes)
-        {
-          memcpy((uint8_t *)buf + copied, apb->samp, apb->nbytes);
-          copied += apb->nbytes;
-        }
-      else
-        {
-          int take = max_bytes - copied;
-
-          memcpy((uint8_t *)buf + copied, apb->samp, take);
-          copied += take;
-        }
-
-      mic_enqueue(apb);   /* 归还缓冲 */
     }
 
   return copied;
@@ -301,6 +383,8 @@ void mic_capture_stop(void)
   ioctl(s_fd, AUDIOIOC_RELEASE);
   close(s_fd);
   s_fd = -1;
+  s_cur = NULL;
+  s_cur_off = 0;
 
   if (s_mq != (mqd_t)-1)
     {

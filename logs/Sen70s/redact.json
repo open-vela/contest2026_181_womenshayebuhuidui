@@ -1,0 +1,6 @@
+[
+  {
+    "pattern": "gho_[A-Za-z0-9]{20,}",
+    "replacement": "gho_***REDACTED***"
+  }
+]

@@ -311,3 +311,10 @@ CONFIG_LV_FONT_MONTSERRAT_32=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
 
 # TEMP: RX_SIZE back to default to test enable stability
+
+# PAN internet access: DHCP client for bt-pan (ifconfig bt-pan dhcp) + ping for verification
+CONFIG_NETUTILS_DHCPC=y
+CONFIG_SYSTEM_PING=y
+
+# R77: full BNEP Ethernet PDU in zblue global ACL pool (removes corrupt dedicated PAN pool)
+CONFIG_BT_L2CAP_TX_MTU=253

@@ -184,3 +184,54 @@
 - 现状：手机可搜到板子但尚未完成配对；LCPU 名字字段存地址（Write_Local_Name 未生效）。
 - 下一步：手机点板子配对（SSP 弹窗确认）→ link key → pan connect（跳过加密已实现）
   → BNEP → bt-pan → 上网。详见 docs_ble/15_r52_r62_breakthrough.md。
+
+## Round 8（2026-08-17 下午，恢复调试固件 + inquiry 双缺陷修复）
+
+- 背景：用户反馈"从未连接上板子，配对时显示无法通信"。探针发现板上跑的是无蓝牙的
+  交付固件（bluetoothd/bttool 均不在 builtin 列表）→ 重烧 R62 调试固件恢复环境。
+- 突破 29：**inquiry 崩溃根因 = zblue 写死 num_rsp=0xff + LCPU 拒答 + 断言致死**：
+  ① br.c:1033 `cp->num_rsp = 0xff`，本 LCPU 固件对 num_rsp=0xff 的 Inquiry 连
+  Command Status 都不回（R61 注入 num_rsp=0x00 却有 Inquiry Result）——BT 规范
+  0x00 才是 unlimited；② 超时后 bt_hci_cmd_send_sync 的 BT_ASSERT 直接 Kernel
+  oops 杀死 bluetoothd（sysworkq 上下文）。此前 R61 探针注入的 inquiry 与栈自身
+  discovery 重叠加剧了 LCPU 沉默。
+- 修复 A：vendor bth4 移除 R61 探针注入（诊断使命完成，纯致害）。
+- 修复 B：zblue hci_core.c bt_hci_cmd_send_sync 两处 BT_ASSERT → 返回 -ETIMEDOUT
+  （控制器超时是错误不是致命故障，bluetoothd 必须存活以便重试）。
+- 修复 C（R63）：bth4 发送路径拦截 Inquiry(0x0401)，num_rsp!=0 强制改写为 0x00。
+- 真机验证进展：R63 首跑 enable 阶段 0x1009(Read_BD_ADDR) 超时（LCPU 偶发沉默，
+  前两把均正常应答）→ 二跑撞上已知 bt_list_add_tail 断言（kill bluetoothd 路径）
+  → RTS 复位不彻底板子静默。待 USB 拔插后继续：干净会话 → enable → inquiry →
+  createbond（预期 SSP 事件桥接链路首次完整走通）。
+- 已知规避：不 kill bluetoothd（用断电获得干净会话）；探针脚本 ssp_trace_probe.py。
+
+## Round 9（2026-08-17 晚，配对完全打通 🎉 —— "无法通信"总根因歼灭战）
+
+- 突破 30：**板上固件曾被主线交付版覆盖**（无 bluetoothd/bttool）→ 重烧调试固件恢复。
+- 突破 31：**inquiry 双缺陷修复**：
+  ① zblue br.c num_rsp 写死 0xff，LCPU 对 0xff 拒答（连 CS 都不回）→ bth4 改写为 0x00；
+  ② send_sync 超时 BT_ASSERT 直接 Kernel oops 杀死 bluetoothd → 改为返回 -ETIMEDOUT。
+- 突破 32：**R59/R62 注入的 scan-activity 命令引发 LCPU Hardware Error(04 10 01 00)**
+  并使其对所有 BR 操作沉默 → R64 全部移除（保留纯参数改写的 scan enable inquiry 位）。
+- 突破 33：**R57 桥接表根本性错误**：0x23 是标准 Read_Remote_Extended_Features（13 参数
+  完全吻合），被误当 io_capa_req 劫持 → zblue 永远等不到 features 完成 → 配对流程根本
+  不启动。R65 重写为纯事件号映射（0x24→0x31, 0x25→0x32, 0x26→0x33, 0x27→0x34,
+  0x29→0x36），参数原样透传（两边都是 bdaddr 寻址）。
+- 突破 34：bt_list_add_tail malloc 失败断言杀 daemon → 改为降级告警（SRAM 90.9% 逼近）。
+- 突破 35：**手机侧发起配对也失败（LMP 0x22）→ 排除"角色"因素，锁定事件流本身**。
+- 突破 36（终极根因）：**zblue 的 Set_Event_Mask 用偏移事件号算位（IO_CAPA_REQ=BIT(48)…），
+  而 LCPU 是标准控制器，SSP 事件 0x24..0x2b 对应标准位 35..42** → SSP 事件全部被
+  mask 屏蔽 → LCPU 从不上报 IO_Capability_Request → host 无法应答 → 认证超时失败。
+  板侧发起=Auth Complete 0x05；手机发起=LMP Response Timeout 0x22（手机显示"无法通信"）。
+  与 Round 4-3 以来所有现象吻合（旧固件 emulate 掩盖了此问题——mask 从未真正下发）。
+- 修复 R69：bth4 send 顶层拦截 Set_Event_Mask(0x0c01)，强制置位标准 SSP 位
+  （octet4 |= 0x78, octet5 |= 0x05），并把 0x0c01 从 emulate 表移入"转发+合成CC"名单。
+- **战果（2026-08-17 20:24，首次完整 SSP 配对）**：
+  io_capa_resp(手机 cap=1 auth=3) → io_capa_req → user_confirm_req passkey=633589
+  （bttool g_auto_accept_pair=true 自动确认，手机侧亦有弹窗）→
+  **BOND_NONE → BONDED** → Link_Key_Notification(0x18) → **br_key store: 1 key(s)**
+  （P2 文件持久化闭环，/data/misc/bt/br_key.bin）。
+- 待办：① PAN e2e（pan connect→bt-pan→dhcp→ping）——首跑撞上串口挂死+烧录 rc=101，
+  板子需 USB 拔插后继续；② 重启后验证 br_key.bin 免配对回连；③ P4 应用层状态机。
+- 工具沉淀：ssp_trace_probe.py（createbond 全事件抓取）、phone_pair_watch.py（被动监听）、
+  legacy_pin_pair.py、pan_e2e.py。

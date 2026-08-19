@@ -1,0 +1,24 @@
+0007-rcs-ai-agent-autostart.patch
+===============================
+
+用途: SF32LB52-DevKit-LCD 开机自启动 AI Agent (LVGL 桌面 + 桌宠 + 本地模型语音问答)。
+
+应用位置 (生产树): vendor/sifli/boards/sf32lb52/sf32lb52_devkit_lcd/src/etc/init.d/rcS
+原理: 板卡 Makefile 的 RCSRCS 把 src/etc/init.d/rcS 打包进 ROMFS (/etc/init.d/rcS),
+      NSH 启动时自动执行 (CONFIG_ETC_ROMFS=y, CONFIG_NSH_INITSCRIPT="init.d/rcS")。
+
+应用方法:
+  cat > vendor/sifli/boards/sf32lb52/sf32lb52_devkit_lcd/src/etc/init.d/rcS << 'EOF'
+  (无注释, 纯命令)
+
+
+  audio_setup
+  ai_agent -d &
+  EOF
+
+注意:
+- rcS 内容会进 ROMFS 且经过 C 预处理器: '#' 与 '/* */' 注释都不可用
+  ('/*' 未被剥掉会令 nsh 报错中止脚本), 只写纯命令。
+- ai_agent -d 守护进程拥有 UI; 守护运行期间不要再启动其它 ai_agent 实例
+  (会二次 lv_init 替换 lv_scr_act)。需要控制台调试时先 kill 守护进程。
+- rcS 为空文件时 NSH 跳过执行, 不影响原有行为。

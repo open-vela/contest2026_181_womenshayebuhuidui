@@ -41,6 +41,14 @@ int sp_tokenize(const char *text, int32_t *out_ids, int max_tokens);
  */
 int sp_detokenize(const int32_t *ids, int n, char *out, int out_size);
 
+/**
+ * 查词表: piece 字面量 (如 "</tool>") -> token id。
+ *
+ * @param piece  piece UTF-8 字节串 (须完整匹配词表条目)
+ * @return token id; -1 未命中
+ */
+int sp_piece_id(const char *piece);
+
 #ifdef __cplusplus
 }
 #endif
