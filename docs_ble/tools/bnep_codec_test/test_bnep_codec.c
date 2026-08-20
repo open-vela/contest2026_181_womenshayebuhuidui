@@ -119,6 +119,99 @@ static void test_mac_byte_order(void)
     CHECK_MEM(mac, want, 6);
 }
 
+/* 本机 MAC 与对端 MAC，供压缩判定使用 */
+static const uint8_t LOCAL_MAC[6] = { 0xaa,0xbb,0xcc,0xdd,0xee,0x01 };
+static const uint8_t PEER_MAC[6]  = { 0xaa,0xbb,0xcc,0xdd,0xee,0x02 };
+
+static size_t build_eth(uint8_t *buf, const uint8_t dst[6],
+                        const uint8_t src[6], uint16_t proto,
+                        size_t payload_len)
+{
+    memcpy(&buf[0], dst, 6);
+    memcpy(&buf[6], src, 6);
+    buf[12] = (uint8_t)(proto >> 8);
+    buf[13] = (uint8_t)(proto & 0xff);
+    for (size_t i = 0; i < payload_len; i++) { buf[14 + i] = (uint8_t)i; }
+    return 14 + payload_len;
+}
+
+static void test_encode_general(void)
+{
+    uint8_t eth[64], out[128];
+    size_t eth_len = build_eth(eth, PEER_MAC, LOCAL_MAC, 0x0800, 20);
+
+    /* compress=false -> 一律 General Ethernet：1 + 14 + 20 = 35 */
+    int n = bnep_encode_eth(out, sizeof(out), eth, eth_len,
+                            LOCAL_MAC, PEER_MAC, false);
+    CHECK(n == 35);
+    if (n == 35) {
+        CHECK(out[0] == BNEP_GENERAL_ETHERNET);
+        CHECK_MEM(&out[1], eth, eth_len);   /* 以太头与载荷原样跟随 */
+    }
+}
+
+/* 这条是 DHCP / ARP 能否工作的核心：广播绝不能压缩 */
+static void test_encode_broadcast_never_compressed(void)
+{
+    uint8_t eth[64], out[128];
+    const uint8_t bcast[6] = { 0xff,0xff,0xff,0xff,0xff,0xff };
+    size_t eth_len = build_eth(eth, bcast, LOCAL_MAC, 0x0806, 28);
+
+    /* 即使显式要求压缩，广播也必须落到 General Ethernet */
+    int n = bnep_encode_eth(out, sizeof(out), eth, eth_len,
+                            LOCAL_MAC, PEER_MAC, true);
+    CHECK(n == (int)(1 + eth_len));
+    if (n > 0) {
+        CHECK(out[0] == BNEP_GENERAL_ETHERNET);
+        CHECK_MEM(&out[1], bcast, 6);       /* dst 必须真实保留为全 F */
+    }
+}
+
+static void test_encode_multicast_never_compressed(void)
+{
+    uint8_t eth[64], out[128];
+    const uint8_t mcast[6] = { 0x01,0x00,0x5e,0x00,0x00,0xfb };
+    size_t eth_len = build_eth(eth, mcast, LOCAL_MAC, 0x0800, 10);
+    int n = bnep_encode_eth(out, sizeof(out), eth, eth_len,
+                            LOCAL_MAC, PEER_MAC, true);
+    CHECK(n > 0);
+    if (n > 0) { CHECK(out[0] == BNEP_GENERAL_ETHERNET); }
+}
+
+static void test_encode_compressed(void)
+{
+    uint8_t eth[64], out[128];
+    /* dst == peer, src == local -> 两端都可省 -> Compressed: 1 + 2 + 20 = 23 */
+    size_t eth_len = build_eth(eth, PEER_MAC, LOCAL_MAC, 0x0800, 20);
+    int n = bnep_encode_eth(out, sizeof(out), eth, eth_len,
+                            LOCAL_MAC, PEER_MAC, true);
+    CHECK(n == 23);
+    if (n == 23) {
+        CHECK(out[0] == BNEP_COMPRESSED_ETHERNET);
+        CHECK(out[1] == 0x08 && out[2] == 0x00);
+    }
+}
+
+static void test_encode_bounds(void)
+{
+    uint8_t eth[BNEP_MAX_ETH_FRAME], out[BNEP_MIN_L2CAP_MTU];
+
+    /* 满尺寸 1514 字节以太帧，General 编码 = 1515，必须 <= 1691 */
+    size_t eth_len = build_eth(eth, PEER_MAC, LOCAL_MAC, 0x0800, 1500);
+    CHECK(eth_len == 1514);
+    int n = bnep_encode_eth(out, sizeof(out), eth, eth_len,
+                            LOCAL_MAC, PEER_MAC, false);
+    CHECK(n == 1515);
+
+    /* 输出容量不足 -> NOSPACE，不得越界（ASan 会抓） */
+    CHECK(bnep_encode_eth(out, 10, eth, eth_len,
+                          LOCAL_MAC, PEER_MAC, false) == BNEP_ERR_NOSPACE);
+
+    /* 输入短于 14 字节以太头 -> TRUNCATED */
+    CHECK(bnep_encode_eth(out, sizeof(out), eth, 13,
+                          LOCAL_MAC, PEER_MAC, false) == BNEP_ERR_TRUNCATED);
+}
+
 int main(void)
 {
     test_setup_req();
@@ -127,6 +220,11 @@ int main(void)
     test_parse_control_setup_req();
     test_filter_and_unknown();
     test_mac_byte_order();
+    test_encode_general();
+    test_encode_broadcast_never_compressed();
+    test_encode_multicast_never_compressed();
+    test_encode_compressed();
+    test_encode_bounds();
 
     if (g_fail) { printf("\n%d check(s) FAILED\n", g_fail); return 1; }
     printf("all checks passed\n");
