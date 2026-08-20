@@ -11,6 +11,7 @@ Wireshark needs the L2CAP Connection Request/Response on CID 0x0001 to
 bind the BNEP dissector to the data channel, so capture from before the
 PAN connection starts.
 """
+import io
 import re
 import struct
 import sys
@@ -60,8 +61,16 @@ def write_pcap(path, packets):
 
 
 def main():
-    src = open(sys.argv[1]) if len(sys.argv) > 1 else sys.stdin
     out = sys.argv[2] if len(sys.argv) > 2 else "bnep.pcap"
+    # errors="replace": a real serial capture contains framing garbage and
+    # partial lines from before the terminal attached, and a single stray
+    # byte would otherwise abort the whole conversion. The regex only ever
+    # matches clean ASCII, so replaced bytes are dropped harmlessly.
+    if len(sys.argv) > 1:
+        src = open(sys.argv[1], "r", encoding="utf-8", errors="replace")
+    else:
+        src = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8",
+                               errors="replace")
     pkts = list(reassemble(src))
     write_pcap(out, pkts)
     print(f"wrote {out}: {len(pkts)} ACL packets")
