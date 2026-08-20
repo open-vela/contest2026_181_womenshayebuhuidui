@@ -7,10 +7,32 @@
 # hand-edited copy silently diverges the first time the product defconfig
 # changes.
 #
-# Adds exactly one symbol:
+# Adds the ACL trace plus the crash diagnostics the bring-up needs:
 #   SF32LB52_BT_TRACE_ACL_FULL  - dump every HCI ACL packet, 32 bytes per
 #                                 syslog line, which bnep_pcap.py turns back
 #                                 into a pcap for Wireshark's BNEP dissector.
+#   DEBUG_HARDFAULT_ALERT       - the CFSR/HFSR/DFSR/BFAR line and the real
+#                                 faulting PC, which the PANIC_WITH_REGS dump
+#                                 alone does not give (its PC/LR point at
+#                                 _assert, not at the instruction that faulted).
+#   DEBUG_BUSFAULT/USAGEFAULT   - same detail for the two faults that would
+#                                 otherwise escalate into that hard fault.
+#   ARCH_STACKDUMP              - stack contents behind the register dump.
+#   BOARDCTL_RESET              - board_reset() already exists for this board
+#                                 (sifli_ap.c -> up_systemreset), it was just
+#                                 never compiled in.
+#   BOARD_RESET_ON_ASSERT=2     - reboot on assert from *any* thread instead of
+#                                 hanging with a dead console. Two reasons: the
+#                                 crash log becomes repeatable, and each reboot
+#                                 reopens the SFBL download window, so a crashed
+#                                 board can be reflashed without the physical
+#                                 USB replug that a silent hang forces.
+#
+# DEBUG_MEMFAULT is deliberately left off: it depends on ARCH_USE_MPU, and this
+# is a flat build with no MPU regions, so turning the MPU on would change the
+# memory behaviour the debug image is supposed to reproduce.
+#
+# None of these alter what the firmware does before it faults.
 #
 # It deliberately does NOT set CONFIG_BLUETOOTH_LOG, even though that is the
 # symbol that defines CONFIG_BLUETOOTH_SERVICE_LOG_LEVEL and so unmutes the
@@ -48,12 +70,27 @@ mkdir -p "$DST_DIR"
 # Full-length HCI ACL trace: the capture source for Gate B. Very verbose
 # (a 1691-byte PDU is ~53 syslog lines), so debug builds only.
 CONFIG_SF32LB52_BT_TRACE_ACL_FULL=y
+
+# Crash diagnostics. hfalert()/bfalert()/ufalert() in arm_hardfault.c and its
+# siblings are no-ops without these, which is why the first bluetoothd crash
+# only printed the _assert context and no fault status registers at all.
+CONFIG_DEBUG_HARDFAULT_ALERT=y
+CONFIG_DEBUG_BUSFAULT=y
+CONFIG_DEBUG_USAGEFAULT=y
+CONFIG_ARCH_STACKDUMP=y
+
+# Reboot on assert rather than spinning in reset_board()'s LED loop with the
+# console gone: >= 2 covers user threads, and every bluetoothd thread is one.
+CONFIG_BOARDCTL_RESET=y
+CONFIG_BOARD_RESET_ON_ASSERT=2
 EOF
 } > "$DST"
 
 echo "wrote $DST"
 echo "  base:  $(wc -l < "$SRC") lines from ai_agent/defconfig"
-echo "  added: SF32LB52_BT_TRACE_ACL_FULL"
+echo "  added: SF32LB52_BT_TRACE_ACL_FULL, DEBUG_HARDFAULT_ALERT,"
+echo "         DEBUG_BUSFAULT, DEBUG_USAGEFAULT, ARCH_STACKDUMP,"
+echo "         BOARDCTL_RESET, BOARD_RESET_ON_ASSERT=2"
 echo
 echo "Configure and build with:"
 echo "  cd /home/aila/projects/vela_contest"

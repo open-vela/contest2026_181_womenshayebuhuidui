@@ -352,3 +352,16 @@ CONFIG_CONFIG_BLUETOOTH_DEFAULT_COD=0x002A0704
 # Full-length HCI ACL trace: the capture source for Gate B. Very verbose
 # (a 1691-byte PDU is ~53 syslog lines), so debug builds only.
 CONFIG_SF32LB52_BT_TRACE_ACL_FULL=y
+
+# Crash diagnostics. hfalert()/bfalert()/ufalert() in arm_hardfault.c and its
+# siblings are no-ops without these, which is why the first bluetoothd crash
+# only printed the _assert context and no fault status registers at all.
+CONFIG_DEBUG_HARDFAULT_ALERT=y
+CONFIG_DEBUG_BUSFAULT=y
+CONFIG_DEBUG_USAGEFAULT=y
+CONFIG_ARCH_STACKDUMP=y
+
+# Reboot on assert rather than spinning in reset_board()'s LED loop with the
+# console gone: >= 2 covers user threads, and every bluetoothd thread is one.
+CONFIG_BOARDCTL_RESET=y
+CONFIG_BOARD_RESET_ON_ASSERT=2
