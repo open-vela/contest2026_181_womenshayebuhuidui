@@ -286,6 +286,14 @@ CONFIG_BT_RFCOMM=y
 # PAN (BNEP over BREDR) — 2026-08-15 BREDR 闸门0通过后启用:
 # 手机"蓝牙网络共享"(NAP) 配对后经 bt-pan 网卡代理上网
 CONFIG_BLUETOOTH_PAN=y
+# Nothing else turns the radio on: bluetoothd only builds the stack, and
+# ai_agent just waits for bt-pan to get an address. Without this the board
+# boots with Bluetooth off until someone types "bttool enable".
+CONFIG_BLUETOOTH_AUTO_ENABLE=y
+CONFIG_BLUETOOTH_AUTO_ENABLE_DELAY_MS=1000
+# 出厂状态（/data 为空）下 adapter 的 scan_mode 默认只有"可连接"，手机搜不到
+# 手表；手表又没有配对界面去手动打开。固定成 2（可连接+可被发现）。
+CONFIG_BLUETOOTH_BOOT_SCAN_MODE=2
 # CONFIG_BLUETOOTH_LOG is not set (log_server needs KVDB property, conflicts with unqlite storage)
 # zblue stack debug log (syslog): needed to trace Link_Key_Request handling
 CONFIG_BT_DEBUG_LOG=y

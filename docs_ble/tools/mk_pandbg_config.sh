@@ -71,6 +71,13 @@ mkdir -p "$DST_DIR"
 # (a 1691-byte PDU is ~53 syslog lines), so debug builds only.
 CONFIG_SF32LB52_BT_TRACE_ACL_FULL=y
 
+# Per-chunk and per-frame HCI tracing on the two sides of the H4 transport.
+# Both were pinned on through the BR/EDR bring-up, which cost one console
+# write per ACL packet - affordable while chasing the pairing handshake, not
+# on the BNEP data path a product image has to sustain.
+CONFIG_SF32LB52_BT_TRACE=y
+CONFIG_BLUETOOTH_HCI_FRAME_TRACE=y
+
 # Crash diagnostics. hfalert()/bfalert()/ufalert() in arm_hardfault.c and its
 # siblings are no-ops without these, which is why the first bluetoothd crash
 # only printed the _assert context and no fault status registers at all.
@@ -88,7 +95,8 @@ EOF
 
 echo "wrote $DST"
 echo "  base:  $(wc -l < "$SRC") lines from ai_agent/defconfig"
-echo "  added: SF32LB52_BT_TRACE_ACL_FULL, DEBUG_HARDFAULT_ALERT,"
+echo "  added: SF32LB52_BT_TRACE_ACL_FULL, SF32LB52_BT_TRACE,"
+echo "         BLUETOOTH_HCI_FRAME_TRACE, DEBUG_HARDFAULT_ALERT,"
 echo "         DEBUG_BUSFAULT, DEBUG_USAGEFAULT, ARCH_STACKDUMP,"
 echo "         BOARDCTL_RESET, BOARD_RESET_ON_ASSERT=2"
 echo
