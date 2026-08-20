@@ -212,6 +212,146 @@ static void test_encode_bounds(void)
                           LOCAL_MAC, PEER_MAC, false) == BNEP_ERR_TRUNCATED);
 }
 
+static void test_decode_roundtrip_all_types(void)
+{
+    uint8_t eth[128], bnep[256], back[256];
+    const uint8_t *ctrl; size_t ctrl_len;
+
+    /* General：dst 是第三方地址，src 虽然等于 local_mac 但这里传 compress=false，
+     * 强制走不压缩路径。注意不能传 true——那样 src 是合法可省的，编码器会
+     * 正确地发 DEST_ONLY(0x04)，而接收端重建 src 时只能填 peer_mac，
+     * 于是 roundtrip 比较必然不等（实测 back[11] 得到 0x02 而非 0x01）。
+     * 这不是缺陷：线路上省掉的 src 语义就是「发送方自己」，只是本测试同时
+     * 固定了 local/peer 两个身份，无法表达它。 */
+    const uint8_t other[6] = { 0x02,0x03,0x04,0x05,0x06,0x07 };
+    size_t eth_len = build_eth(eth, other, LOCAL_MAC, 0x0800, 32);
+    int n = bnep_encode_eth(bnep, sizeof(bnep), eth, eth_len,
+                            LOCAL_MAC, PEER_MAC, false);
+    CHECK(bnep[0] == BNEP_GENERAL_ETHERNET);
+    int m = bnep_decode_eth(back, sizeof(back), bnep, (size_t)n,
+                            LOCAL_MAC, PEER_MAC, &ctrl, &ctrl_len);
+    CHECK(m == (int)eth_len);
+    if (m == (int)eth_len) { CHECK_MEM(back, eth, eth_len); }
+
+    /* Compressed：解码方向是「手机发给我们」，所以 dst=local, src=peer */
+    eth_len = build_eth(eth, LOCAL_MAC, PEER_MAC, 0x0800, 32);
+    bnep[0] = BNEP_COMPRESSED_ETHERNET;
+    bnep[1] = 0x08; bnep[2] = 0x00;
+    memcpy(&bnep[3], &eth[14], 32);
+    m = bnep_decode_eth(back, sizeof(back), bnep, 3 + 32,
+                        LOCAL_MAC, PEER_MAC, &ctrl, &ctrl_len);
+    CHECK(m == (int)eth_len);
+    if (m == (int)eth_len) { CHECK_MEM(back, eth, eth_len); }
+
+    /* SrcOnly：帧内带 src，dst 补 local */
+    bnep[0] = BNEP_COMPRESSED_ETHERNET_SRC_ONLY;
+    memcpy(&bnep[1], PEER_MAC, 6);
+    bnep[7] = 0x08; bnep[8] = 0x00;
+    memcpy(&bnep[9], &eth[14], 32);
+    m = bnep_decode_eth(back, sizeof(back), bnep, 9 + 32,
+                        LOCAL_MAC, PEER_MAC, &ctrl, &ctrl_len);
+    CHECK(m == (int)eth_len);
+    if (m == (int)eth_len) { CHECK_MEM(back, eth, eth_len); }
+}
+
+static void test_decode_dest_only_and_broadcast(void)
+{
+    uint8_t bnep[128], back[256];
+    const uint8_t *ctrl; size_t ctrl_len;
+    const uint8_t bcast[6] = { 0xff,0xff,0xff,0xff,0xff,0xff };
+
+    /* DestOnly 携带广播 dst，src 补 peer */
+    bnep[0] = BNEP_COMPRESSED_ETHERNET_DEST_ONLY;
+    memcpy(&bnep[1], bcast, 6);
+    bnep[7] = 0x08; bnep[8] = 0x06;
+    for (int i = 0; i < 28; i++) { bnep[9 + i] = (uint8_t)i; }
+
+    int m = bnep_decode_eth(back, sizeof(back), bnep, 9 + 28,
+                            LOCAL_MAC, PEER_MAC, &ctrl, &ctrl_len);
+    CHECK(m == 14 + 28);
+    if (m == 14 + 28) {
+        CHECK_MEM(&back[0], bcast, 6);
+        CHECK_MEM(&back[6], PEER_MAC, 6);
+        CHECK(back[12] == 0x08 && back[13] == 0x06);
+    }
+}
+
+static void test_decode_extension_headers(void)
+{
+    uint8_t bnep[128], back[256];
+    const uint8_t *ctrl; size_t ctrl_len;
+    size_t o = 0;
+
+    /* Compressed + 3 个扩展头，最后一个的 more 位清零 */
+    bnep[o++] = BNEP_COMPRESSED_ETHERNET | BNEP_EXT_FLAG;
+    bnep[o++] = 0x08; bnep[o++] = 0x00;
+    bnep[o++] = 0x80; bnep[o++] = 2; bnep[o++] = 0xa1; bnep[o++] = 0xa2;
+    bnep[o++] = 0x80; bnep[o++] = 1; bnep[o++] = 0xb1;
+    bnep[o++] = 0x00; bnep[o++] = 3; bnep[o++] = 0xc1; bnep[o++] = 0xc2;
+    bnep[o++] = 0xc3;
+    size_t hdr_end = o;
+    for (int i = 0; i < 16; i++) { bnep[o++] = (uint8_t)(0x40 + i); }
+
+    int m = bnep_decode_eth(back, sizeof(back), bnep, o,
+                            LOCAL_MAC, PEER_MAC, &ctrl, &ctrl_len);
+    CHECK(m == 14 + 16);
+    if (m == 14 + 16) {
+        CHECK_MEM(&back[0], LOCAL_MAC, 6);
+        CHECK_MEM(&back[6], PEER_MAC, 6);
+        CHECK_MEM(&back[14], &bnep[hdr_end], 16);
+    }
+
+    /* 扩展头长度撒谎，越过帧尾 -> TRUNCATED */
+    bnep[4] = 200;
+    CHECK(bnep_decode_eth(back, sizeof(back), bnep, o,
+                          LOCAL_MAC, PEER_MAC, &ctrl, &ctrl_len)
+          == BNEP_ERR_TRUNCATED);
+}
+
+static void test_decode_control_and_bounds(void)
+{
+    uint8_t back[256];
+    const uint8_t *ctrl = NULL; size_t ctrl_len = 0;
+
+    /* 控制帧：返回 IS_CONTROL 并指向 message type 字节 */
+    const uint8_t rsp[] = { 0x01, 0x02, 0x00, 0x00 };
+    CHECK(bnep_decode_eth(back, sizeof(back), rsp, sizeof(rsp),
+                          LOCAL_MAC, PEER_MAC, &ctrl, &ctrl_len)
+          == BNEP_DECODE_IS_CONTROL);
+    CHECK(ctrl == &rsp[1]);
+    CHECK(ctrl_len == 3);
+
+    /* 带扩展头的控制帧同样要能识别 */
+    const uint8_t rsp_ext[] = { 0x01 | BNEP_EXT_FLAG, 0x02, 0x00, 0x00 };
+    CHECK(bnep_decode_eth(back, sizeof(back), rsp_ext, sizeof(rsp_ext),
+                          LOCAL_MAC, PEER_MAC, &ctrl, &ctrl_len)
+          == BNEP_DECODE_IS_CONTROL);
+
+    /* 未知帧类型 */
+    const uint8_t bad[] = { 0x7f, 0x00 };
+    CHECK(bnep_decode_eth(back, sizeof(back), bad, sizeof(bad),
+                          LOCAL_MAC, PEER_MAC, &ctrl, &ctrl_len)
+          == BNEP_ERR_BADTYPE);
+
+    /* 空帧 */
+    CHECK(bnep_decode_eth(back, sizeof(back), bad, 0,
+                          LOCAL_MAC, PEER_MAC, &ctrl, &ctrl_len)
+          == BNEP_ERR_TRUNCATED);
+
+    /* General 帧声明了 14 字节头却只给了 8 字节 */
+    const uint8_t shortg[] = { 0x00, 1,2,3,4,5,6,7 };
+    CHECK(bnep_decode_eth(back, sizeof(back), shortg, sizeof(shortg),
+                          LOCAL_MAC, PEER_MAC, &ctrl, &ctrl_len)
+          == BNEP_ERR_TRUNCATED);
+
+    /* 输出缓冲不足 */
+    uint8_t small[10];
+    const uint8_t comp[] = { 0x02, 0x08, 0x00, 1,2,3,4,5,6,7,8 };
+    CHECK(bnep_decode_eth(small, sizeof(small), comp, sizeof(comp),
+                          LOCAL_MAC, PEER_MAC, &ctrl, &ctrl_len)
+          == BNEP_ERR_NOSPACE);
+}
+
 int main(void)
 {
     test_setup_req();
@@ -225,6 +365,10 @@ int main(void)
     test_encode_multicast_never_compressed();
     test_encode_compressed();
     test_encode_bounds();
+    test_decode_roundtrip_all_types();
+    test_decode_dest_only_and_broadcast();
+    test_decode_extension_headers();
+    test_decode_control_and_bounds();
 
     if (g_fail) { printf("\n%d check(s) FAILED\n", g_fail); return 1; }
     printf("all checks passed\n");
