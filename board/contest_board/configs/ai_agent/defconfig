@@ -227,7 +227,10 @@ CONFIG_DEBUG_MM_ERROR=y
 CONFIG_BT_DEVICE_NAME="Agent-Watch"
 # Trim zblue buffers to fit .bss in 512K SRAM (GATT server adds ~70K)
 CONFIG_BT_BUF_ACL_TX_COUNT=5
-CONFIG_BT_BUF_ACL_RX_COUNT_EXTRA=5
+# Down from 5: BT_BUF_ACL_RX_SIZE goes to 1695 for full-length BNEP PDUs, so
+# each extra RX buffer now costs 1695 bytes instead of 1025. Two is enough to
+# keep one frame in reassembly while another is dispatched.
+CONFIG_BT_BUF_ACL_RX_COUNT_EXTRA=2
 CONFIG_BT_ATT_TX_COUNT=5
 # Legacy advertising commands (0x2006/0x2008/0x200A): SF32LB52 LCPU firmware
 # reports success on ext adv (0x2039) but transmits nothing. Aligned with the
@@ -267,11 +270,13 @@ CONFIG_BT_GATT_SERVICE_CHANGED=y
 CONFIG_BT_ATT_OVER_BR=y
 # bttool for direct stack verification (bisect experiment)
 CONFIG_BLUETOOTH_TOOLS=y
-# Connection slots: BT_MAX_CONN=1 leaves no free slot once the
-# connectable-adv conn object is reserved, so the phone GATT connect
-# never completes (App times out after ~30s). GATT_CLIENT=y layout is
-# stable, official Gemini-S1 uses 5.
+# Connection slots: BT_MAX_CONN=2 allows one slot for connectable-adv
+# and one for the phone ACL (PAN/BREDR). Gemini-S1 uses 5.
 CONFIG_BT_MAX_CONN=2
+# SSP Just-Works auto-reply: enabled so that when both sides support
+# Just-Works (NoInputOutput), the pairing_confirm callback fires
+# instead of blocking on a passkey display that nobody sees.
+CONFIG_HCI_AUTO_REPLY_IN_JUST_WORK=y
 # LE advertising (device discovery from the phone)
 CONFIG_BLUETOOTH_BLE_ADV=y
 # SPP/RFCOMM kept for compilation (ble_net.c has no #ifdef guards);
@@ -297,9 +302,14 @@ CONFIG_EXAMPLES_AI_AGENT_VELA_SHELL_FULL=y
 CONFIG_AI_AGENT_LVGL_UI=y
 CONFIG_AI_AGENT_LCD_PATH="/dev/lcd0"
 CONFIG_AI_AGENT_TOUCH_PATH="/dev/input0"
-# BLE GATT NUS channel is the data path (LCPU firmware has no BREDR/SPP)
+# bt-pan is the network data path now (network_manager.c treats it as the
+# primary channel and BLE GATT only as a backup). Every ble_gatt_net_* call
+# site is inside #ifdef CONFIG_AI_AGENT_BLE_GATT, so turning the channel off
+# costs the backup path and nothing else - it frees ~70K of SRAM that the
+# 1695-byte ACL RX buffers below need. AI API calls are unaffected: they go
+# over whichever interface holds an IP.
 # CONFIG_AI_AGENT_BLE_NET is not set
-CONFIG_AI_AGENT_BLE_GATT=y
+# CONFIG_AI_AGENT_BLE_GATT is not set
 CONFIG_AI_AGENT_NET_RPMSG=y
 
 # Chinese font support for display
@@ -317,4 +327,20 @@ CONFIG_NETUTILS_DHCPC=y
 CONFIG_SYSTEM_PING=y
 
 # R77: full BNEP Ethernet PDU in zblue global ACL pool (removes corrupt dedicated PAN pool)
+# TX_MTU stays at 253 on purpose: the BR/EDR send path checks the *negotiated*
+# br_chan->tx.mtu (zblue classic/l2cap_br.c:1906) and never reads this symbol,
+# so raising it would only enlarge every TX buffer for no gain.
 CONFIG_BT_L2CAP_TX_MTU=253
+# A NAP peer may send us a full 1691-byte BNEP PDU. At the old 1025 the ACL
+# reassembly buffer truncated large inbound frames, which shows up as stalled
+# TCP downloads rather than an obvious error. 1695 = 1691 + 4 bytes of L2CAP
+# header. Paired with RX_COUNT_EXTRA=2 above so the pool does not balloon.
+CONFIG_BT_BUF_ACL_RX_SIZE=1695
+# Class of Device. The Kconfig symbol is named CONFIG_BLUETOOTH_DEFAULT_COD,
+# so the emitted .config symbol carries the prefix twice - a line written with
+# one prefix is silently discarded (the old 0x00020510 here never took effect;
+# the build used the Kconfig default 0x00280704 instead).
+# 0x002A0704 = Networking(0x020000) + Audio(0x200000) + Capturing(0x080000)
+# + Wearable/Wristwatch(0x000704). Phones read the Networking bit to decide
+# whether to offer tethering, so PAN needs it set.
+CONFIG_CONFIG_BLUETOOTH_DEFAULT_COD=0x002A0704
