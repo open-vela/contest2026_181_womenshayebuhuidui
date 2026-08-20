@@ -70,8 +70,10 @@ Setup Response `status=0x00` → `pan_netif_state_cb ifname:bt-pan, state:1`。
 也就是说链路没问题，**问题在 BNEP 的字节编码**。这是好消息：字节对不对可以
 离线证明，不必靠上板猜（§6）。
 
-现存缺陷共 7 条。D1–D6 都在
-`frameworks/connectivity/bluetooth/service/stacks/zephyr/`；D7 是配置层问题：
+现存缺陷共 10 条。D1–D6 都在
+`frameworks/connectivity/bluetooth/service/stacks/zephyr/`；D7 是配置层问题；
+D8–D10 是第二轮静态复核新增的，见 §11（**D9 优先级高于 D1**：它让 DHCP
+DISCOVER 连发都发不出去，D1 描述的"发出去但被手机丢弃"其实还轮不到发生）：
 
 **D1（DHCP 失败的直接原因）** `sal_pan_interface.c:966-978`
 ——发送数据帧时 type 写 `0x00`（General Ethernet，规范要求随后跟 dst6+src6+proto2
@@ -504,24 +506,57 @@ tshark 才能把该 CID 绑定到 BNEP dissector。
 
 ### 7.1 Class of Device 必须带 Networking 位
 
-`CONFIG_CONFIG_BLUETOOTH_DEFAULT_COD=0x00280704` 缺少 Service Class 的
-**Networking 位（bit 17）**。手机在决定是否向本设备提供网络共享时会看这一位，
-缺失会导致手机侧的 NAP 根本不把我们当网络客户端。
+生效值是 `0x00280704`，缺少 Service Class 的 **Networking 位（bit 17）**。
+手机在决定是否向本设备提供网络共享时会看这一位，缺失会导致手机侧的 NAP
+根本不把我们当网络客户端。修正：`0x00280704 | 0x00020000 = 0x002A0704`。
 
-修正：`0x00280704 | 0x00020000 = 0x002A0704`。
+但"改 defconfig 即可"是错的，这里有一个符号名陷阱，必须按实际链路改：
+
+1. Kconfig 里声明的符号名本身带了一次 `CONFIG_` 前缀
+   （`frameworks/connectivity/bluetooth/Kconfig:278` 是
+   `config CONFIG_BLUETOOTH_DEFAULT_COD`，`default 0x00280704`），
+   所以生成的宏是 **`CONFIG_CONFIG_BLUETOOTH_DEFAULT_COD`**
+   （`out/nuttx_contest_board_ai_agent/.config:3205` 实测确认）。
+2. 消费侧用的却是单前缀名：`service/common/bluetooth_define.h:29-33`
+   `#ifdef CONFIG_BLUETOOTH_DEFAULT_COD` → 该宏**不存在**，
+   于是走 `#else` 分支的硬编码 `0x00280704`。
+3. defconfig:323 现有的 `CONFIG_BLUETOOTH_DEFAULT_COD=0x00020510`
+   **是一行死配置**：它不对应任何合法 Kconfig 符号，被 olddefconfig 丢弃，
+   所以那个"看起来已经带 Networking 位"的值从未生效。
+
+因此要同时改三处才可靠：`bluetooth_define.h` 的 `#ifdef` 改成双前缀名、
+`#else` 兜底值改成 `0x002A0704`、defconfig 用双前缀名写
+`CONFIG_CONFIG_BLUETOOTH_DEFAULT_COD=0x002A0704` 并删掉死行。
+
+还有一个持久化覆盖问题：`CONFIG_BLUETOOTH_STORAGE_UNQLITE_SUPPORT=y`，
+`DEFAULT_DEVICE_OF_CLASS` 只是 `adapter_properties_default()`
+（`service/common/storage.c:99`）在**没有已存记录时**的初值；
+`adapter_service.c:379` 之后是从 storage 读的。老板子上很可能已存了旧 COD，
+改默认值不会自动生效。所以 Gate 必须**运行时回读** COD，
+而不是只看编译期常量（见 §8 Gate F）。
 
 `vendor/sifli` 侧已有转发 `HCI_Write_Class_Of_Device` 的通路
-（`sf32lb52_bth4.c:822,1148,1168`），改 defconfig 即可生效，无需改 bth4 代码。
+（`sf32lb52_bth4.c:822,1148,1168`），无需改 bth4 代码。
 
-### 7.2 SDP：发布正确的 PANU 服务记录
+### 7.2 SDP：记录本身是对的，`.uuid` 字段是另一回事
 
-`profiles/pan/panu_service.c:1103` 当前是 `.uuid = {BT_UUID128_TYPE, {0}}`
-——**全零 UUID**。必须改为 PANU 的 16-bit UUID `0x1115`，并确保服务记录里的
-L2CAP Protocol Descriptor 指向 PSM `0x000F`。
+**更正前一轮的判断。** `profiles/pan/panu_service.c:1108` 的
+`.uuid = {BT_UUID128_TYPE, {0}}`（全零）**不是 SDP 问题**。真正对外发布的
+PANU 服务记录是 `stacks/zephyr/sal_pan_interface.c:423-458` 的
+`g_panu_sdp_attrs`，它已经正确声明了 `BT_SDP_PANU_SVCLASS`、
+L2CAP Protocol Descriptor 指向 PSM `0x000F`（`:440` 用的就是 `BT_BNEP_PSM`）、
+以及 BNEP ProtocolDescriptor 和 ProfileDescriptor。这一节原来的结论作废。
 
-我们是 PANU（客户端），发起方向是我们 → 手机 NAP，所以严格说手机不必浏览
-我们的 SDP。但 HyperOS 在某些路径下会先做 SDP 查询再决定是否接受 BNEP 连接，
-发布正确记录成本极低而收益明确，因此纳入第一版。
+`profile_service_t.uuid` 的唯一消费者是
+`service/profiles/service_manager.c:163-183` 的 `service_manager_get_uuid()`，
+它会**跳过全零 UUID**（`:173` 与 `empty_uuid` 比较后 `continue`），
+而该函数只被 `adapter_service.c:2287` 的 `adapter_get_uuids()` 调用，
+再往上只有 IPC 的"查询本机 UUID 列表"接口。全仓库没有任何路径把它写进
+EIR 或 SDP（已 grep 确认 `sal_adapter_interface.c` 无此写入）。
+
+结论：把它改成 `BT_UUID_DECLARE_16(BT_UUID_PANU)` 只影响本机 API 上报的
+自查一致性，**对手机侧行为零影响**，属于顺手修正而非阻塞项。
+（注：`bt_uuid.h` 目前也没有 `BT_UUID_PANU` 宏，需要一起补。）
 
 ### 7.3 连接触发时机与 SDP 冲突
 
@@ -549,9 +584,28 @@ zblue 的 `l2cap_br_conn_security()` 在 CONN_REQ 阶段把关。R99 的日志�
 R99 的现象是"手机约 30s 超时断链"。产品级必须能自愈：
 
 - ACL 断开 → 清理 BNEP 状态、`ifdown bt-pan`、释放 TAP 的 IP；
-- 指数退避重连：2s / 4s / 8s / 16s / 30s（上限），无限重试；
+- 有上限的退避重连；
 - 重连成功后重新走完整的 §7.3 链条，**不复用旧的 BNEP 会话状态**；
 - 每次状态迁移打一条 syslog，字段固定（便于 §6.2 的日志解析工具复用）。
+
+**更正（第三轮复核）：退避机制本来就有，不要重写。** 初稿这里写的是
+"指数退避 2s/4s/8s/16s/30s（上限），无限重试"，实际读代码后作废：
+`panu_service.c:728-769` 已经实现了从 xiaozhi 移植的三分类重连
+（首连 3 次 × 3s；连过再断 30 次 × 10s；外加 `:196-210` 的 5s LCPU 冷却窗），
+DHCP 侧 `dhcpc_request()`（`RETRIES=3` × `RECV_TIMEOUT_MS=3000`）外面还套了
+10 次 × `sleep(2)`，合计约 110 秒耐心。再叠一层指数退避只会让两套策略打架，
+且"无限重试"与产品级的可预期行为相冲突。
+
+这一区真正的缺陷是 **DHCP 工作线程的生命周期**，三条：
+
+1. `g_dhcp_running` 在线程的四条退出路径上都没清（`:281/:287/:317/:326`），
+   而 `pan_start_dhcp():331` 拿它当重入锁——**链路不断而 DHCP 失败时，
+   之后永远不再重试**。
+2. 该线程是 joinable 且从不 join，每次连接漏一个 TCB + 4 KB 栈（Gate H 会量到）。
+3. DHCP 彻底耗尽后是死胡同：BNEP 链路还在，三分类断连逻辑不触发，
+   于是既没有 IP 也没有重连。应主动断链，把决策交还给已有的断连处理。
+
+见计划 Task 9。
 
 ## 8. 上板验证与产品级验收门
 
@@ -561,10 +615,10 @@ R99 的现象是"手机约 30s 超时断链"。产品级必须能自愈：
 |---|---|---|
 | A | 编解码器单元测试（开发机） | 全绿，覆盖 §6.1 全部用例 |
 | B | pcap → Wireshark BNEP dissector | 零 malformed；DHCP 可解析到 Bootstrap 层 |
-| C | DHCP 取址 | 3 台设备各 10 次连接，成功率 ≥ 9/10 |
+| C | DHCP 取址 | **入门判据**：运行时回读 COD，bit 17(Networking) 已置（§7.1 的持久化覆盖问题）。**主判据**：3 台设备各 10 次连接，成功率 ≥ 9/10 |
 | D | ICMP | ping 网关 100 包，丢包 < 1%，无 30s 断链 |
 | E | DNS + HTTPS | 成功完成一次 AI API 调用（含 TLS 握手） |
-| F | 吞吐 | 记录实测 kbps；不设硬门槛，但需 ≥ AI API 可用的下限 |
+| F | 吞吐 | 记录实测 kbps；不设硬门槛，但需 ≥ AI API 可用的下限。**追加判据**：满 MSS 上行（1514 字节帧）连续跑通，且 `tx_oversize` 计数恒为 0（验 D8 + §11.3） |
 | G | SRAM | 上板 `free` 实测，剩余量记录并 ≥ Gate C 之前的基线 |
 | H | 长稳 | 连续 2 小时，含 ≥3 次人为断链恢复，无内存泄漏、无崩溃 |
 
@@ -613,4 +667,145 @@ R99 的现象是"手机约 30s 超时断链"。产品级必须能自愈：
   （`bts2_app_pan.c`、`bt_lwip.c`、`app/src/main.c`、`proj.conf`），
   这些已全部读取并吸收。**本设计不对 SDK 有任何依赖**，该失败不阻塞任何 Gate。
   （注：pip 经镜像可用、apt 经清华镜像可用，仅 github 不可达——见 §6.2.1。）
+
+## 11. 第二轮静态复核：新增缺陷 D8–D10 与 MTU 派生设计
+
+写实施计划时逐行复核了数据路径的两端（`panu_service.c` 的 TAP 侧与
+`sal_pan_interface.c` 的 L2CAP 侧），又找出两个此前完全没被记录的阻塞项。
+两个都不影响小包，所以在只测 DHCP/ARP 的历史轮次里永远不会暴露，
+但两个都会在真实业务流量（HTTPS 到 AI API）上必然触发。
+
+### 11.1 D9：本地 TX 长度上限把 DHCP DISCOVER 直接拒掉（最高优先级）
+
+`sal_pan_interface.c:73`
+
+```c
+#define PAN_TX_PAYLOAD_MAX (CONFIG_BT_L2CAP_TX_MTU - 3)
+```
+
+`CONFIG_BT_L2CAP_TX_MTU=253`（defconfig:322 实测），所以上限是 **250 字节**。
+`bt_sal_pan_write()` 在 `:960-963` 用它做硬拒：
+
+```c
+if (length > PAN_TX_PAYLOAD_MAX) {
+    BT_LOGW("%s frame too long %u", __func__, length);
+    return BT_STATUS_NOMEM;
+}
+```
+
+这里的 `length` 是**剥掉 14 字节以太头之后**的载荷长度。而一个 DHCP DISCOVER
+的载荷是 IP(20) + UDP(8) + BOOTP：NuttX 的 `struct dhcp_msg`
+（`apps/netutils/dhcpc/dhcpc.c:129` 附近，固定头 236 字节 + `options[312]`）
+实际发送长度按 `len = pend - &packet` 计算，DISCOVER 大约 260–270 字节，
+合计约 **290 字节 > 250**。
+
+**也就是说 DHCP DISCOVER 从来没被发出去过，它在进 BNEP 编码之前就被本地拒了。**
+这解释了为什么此前所有轮次都是"bt-pan UP 但拿不到 IP"，且抓不到任何 BNEP 数据帧。
+ARP 请求载荷只有 28 字节，能过这道闸，所以只有 ARP 走到了 D1 那一步。
+
+这个上限本身是没有依据的。zblue 的 BR/EDR 发送路径**不看**
+`CONFIG_BT_L2CAP_TX_MTU`：`l2cap_br.c:1906` 只检查
+`buf->len > br_chan->tx.mtu`，而 `tx.mtu` 来自对端 CONFIG_REQ 里的 MTU 选项
+（`l2cap_br.c:1289`），没有 MTU 选项时兜底 `L2CAP_BR_DEFAULT_MTU`=672
+（`:1448`）。Android/HyperOS NAP 会给 1691。再往下
+`bt_l2cap_br_send_cb` → `bt_conn_send_cb`，由 conn.c 按控制器
+`Read_Buffer_Size` 报的 ACL 长度做零拷贝分片，与 `CONFIG_BT_L2CAP_TX_MTU` 无关。
+而 `pan_tx_pool` 本来就是按 `BT_L2CAP_BUF_SIZE(PAN_TX_MTU=1691)` 开的
+（`:67-71`），缓冲区容量从一开始就够。
+
+修正：TX 上限改为从**协商结果**派生，`conn->chan.tx.mtu` 减去本帧 BNEP 头长度。
+
+### 11.2 D8：TAP 读缓冲偏小会让上行**永久卡死**（不是丢包）
+
+`panu_service.c:654-663` 用 `pan_get_tun_packet_size()` 的返回值开读缓冲：
+
+```c
+ret = pan_get_tun_packet_size(PAN_DEV_NAME);
+g_pan.tun_packet_size = ret;
+pan_read_buf = malloc(g_pan.tun_packet_size);
+```
+
+而 `pan_get_tun_packet_size()`（`:608-631`）返回的是
+`ifr_mtu - sizeof(eth_hdr_t)`，也就是 **MTU 再减 14**。
+NuttX 侧的实际数值链是：`netdev_register.c:318-323` 对 `NET_LL_ETHERNET`
+设 `llhdrlen=14`、`pktsize=CONFIG_NET_ETH_PKTSIZE`；defconfig:194
+`CONFIG_NET_ETH_PKTSIZE=1514`；`netdev_ioctl.c:1020-1022` 的 `SIOCGIFMTU`
+返回 `pktsize - llhdrlen` = **1500**。于是 `tun_packet_size = 1486`，
+`pan_read_buf` 只有 1486 字节，而 `:585` 就用这个长度去 `read()`。
+
+关键在于 NuttX TUN 驱动对"缓冲太小"的处理不是截断，是拒绝且**不出队**
+（`nuttx/drivers/net/tun.c:1127-1133`）：
+
+```c
+if (priv->read_d_len > 0)
+  {
+    if (buflen < priv->read_d_len)
+      {
+        ret = -EINVAL;
+        break;      /* 注意：read_d_len 没有被清零，帧还在队列里 */
+      }
+```
+
+`read_d_len` 是含 14 字节以太头的整帧长度，最大 1514。所以只要 IP 栈产生一个
+1487–1514 字节的帧（一个满 MSS 的 TCP 段正好是 1514 字节，
+`TCP_MSS = 1514-14-20-20 = 1460`），`read()` 就永远返回 `-EINVAL`，
+该帧永远留在队列里，poll 永远可读——**上行方向从此彻底停摆**，
+不是掉一个包而是整条接口死掉。DHCP 阶段包都小，所以历史测试测不出来。
+
+修正：读缓冲按 `CONFIG_NET_ETH_PKTSIZE`（1514）开，不要用 `MTU-14`；
+`read()` 也传同一个长度。同时 `pan_on_data_received()` 里
+`malloc(tun_packet_size + sizeof(ethhdr))` 和 `:896` 的长度校验也要跟着改成
+按整帧上限，否则下行会在同一个数字上出现对称的错误。
+
+### 11.3 MTU 派生：一处协商，两端对齐
+
+D8 和 D9 的共同根因是：**三个 MTU 各自独立瞎猜**——TAP 的 MTU 由 NuttX
+按以太网默认给 1500，BNEP 的 TX 上限由一个和 BR 路径无关的 Kconfig 给 250，
+L2CAP 的 `tx.mtu` 由对端协商给 1691 或 672，三者之间没有任何约束关系。
+逐个打补丁只会再埋新的不一致，所以第一版就把它做成单一派生链：
+
+```
+L2CAP CONFIG 协商完成 → br_chan->tx.mtu (权威值)
+        ↓ 减去最坏情况 BNEP 头 14 字节（General Ethernet）
+BNEP 可承载的以太载荷上限 = tx.mtu - 14
+        ↓ 通过 SIOCSIFMTU 写回
+TAP 接口 MTU = min(1500, tx.mtu - 14)
+        ↓ IP 栈据此算 TCP MSS，从此不会产生超限帧
+```
+
+具体规则：
+
+1. BNEP setup 成功后、`ifup` 之前，读 `conn->chan.tx.mtu`，
+   用 `SIOCSIFMTU` 把 TAP 的 MTU 设成 `min(1500, tx.mtu - 14)`。
+   `netdev_ioctl.c:1023-1025` 的 `SIOCSIFMTU` 会把
+   `d_pktsize` 设成 `ifr_mtu + 14`，IP 栈的 `TCP_MSS`/`UDP_MSS`
+   都是从 `d_pktsize` 推导的，所以这一步之后上层永远不会造出超限帧。
+2. TX 侧仍然保留一道运行时检查，但阈值取 `conn->chan.tx.mtu`
+   而不是编译期常量；触发即说明 MTU 派生链坏了，按 `BT_STATUS_NOMEM`
+   返回并计数告警（正常流量下计数必须恒为 0，这是 Gate F 的追加判据之一）。
+3. 读缓冲固定 `CONFIG_NET_ETH_PKTSIZE`=1514，与 MTU 协商结果解耦——
+   缓冲开大是免费的（一次 malloc），开小是永久卡死，不对称，所以取上界。
+4. `tx.mtu < 1691`（例如兜底 672）不再是错误路径，而是自动降级为
+   MTU 658 的可用链路。这同时去掉了对"对端必须给 1691"的隐含依赖。
+
+### 11.4 D10：`profile_service_t.uuid` 的定性更正
+
+见 §7.2。原判断"全零 UUID 导致 SDP 记录不对"是错的，已作废：真正的 SDP 记录
+在 `sal_pan_interface.c:423-458` 且本来就正确。`.uuid` 只影响本机
+`bt_adapter_get_uuids()` 的自查上报，对手机侧行为零影响，降级为顺手修正。
+
+### 11.5 对 §2/§8 的影响
+
+- 缺陷总数 7 → 10。修复优先级重排为 **D9 → D8 → D1 → D2/D3/D4/D5/D6 → D7 → D10**：
+  D9 不修则一个字节都发不出去，D1 的编码正确性无法被观测。
+- Gate B（离线 pcap 判定）现在必须**先看到 DHCP DISCOVER 出现在 trace 里**，
+  再看它的 BNEP 头是否合规——前者验 D9，后者验 D1。
+- **Gate F 追加判据**：满 MSS 上行（1514 字节帧）连续跑通，
+  且 TX 超限计数器 `tx_oversize` 恒为 0（验 D8 + §11.3）。
+- **Gate C 入门判据**：运行时回读 COD，确认 bit 17 已置（验 §7.1 的持久化覆盖
+  问题）。放在 Gate C 之前是因为 Networking 位是手机愿不愿意向我们提供网络共享
+  的前提——这一条不过，DHCP 失败的原因就无法归因到 BNEP。
+  两条判据都已写进 §8 的门表，不新增字母门。
+
+
 
