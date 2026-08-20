@@ -215,14 +215,19 @@ BNEP 直接把 48 位 BD_ADDR 当作 48 位 MAC 使用，但两者字节序相�
 因此 `bt_addr_t` → MAC 必须**逐字节反转**。这一步做错的表现是：握手能过、
 单播能收到但 ARP 永远解析不出对端，非常容易被误判为"手机不响应"。
 
-统一在 `bnep_codec.h` 提供：
+统一在 `bnep_codec.h` 提供一个**不依赖 zblue 类型**的转换器（保持 §3.2 的
+"编解码器零依赖"性质，这样它才能在开发机上独立编译测试）：
 
 ```c
-static inline void bnep_addr_to_mac(uint8_t mac[6], const bt_addr_t *a)
+/* le48 为小端 48 位地址（zblue 的 bt_addr_t.val 即此布局），
+ * 输出网络序 MAC。调用方传 addr->val，codec 不认识 bt_addr_t。 */
+static inline void bnep_mac_from_le48(uint8_t mac[6], const uint8_t le48[6])
 {
-    for (int i = 0; i < 6; i++) { mac[i] = a->val[5 - i]; }
+    for (int i = 0; i < 6; i++) { mac[i] = le48[5 - i]; }
 }
 ```
+
+SAL 层这样用：`bnep_mac_from_le48(local_mac, bt_addr->val);`
 
 ### 3.4 Setup 握手状态机
 
@@ -439,6 +444,62 @@ Wireshark 的 BNEP dissector 与我们的实现来自完全独立的源头，它
 R94（把 `0x0003` 误读为需要 128-bit UUID）和 R96（把标准 4 字节 Response
 误判为 HyperOS 非标准）两次误判，都是缺少独立裁判造成的。
 
+#### 6.2.1 工具链可用性：已实测打通（无需 root）
+
+开发机没有安装 tshark，且 `sudo` 需要密码、github.com 不可达。已实测出一条
+**完全用户态、无需 root** 的路径，并跑通了全链路冒烟测试：
+
+```bash
+# 1) 只下载 deb，不安装（apt-get download 不需要 root）
+mkdir -p /tmp/tshark_local/debs && cd /tmp/tshark_local/debs
+apt-get download tshark wireshark-common libwireshark15 libwireshark-data \
+  libwiretap12 libwsutil13 libsmi2ldbl liblua5.2-0 libspandsp2 \
+  libssh-gcrypt-4 libc-ares2 libsnappy1v5 libnl-route-3-200 \
+  libmaxminddb0 libbrotli1 libgcrypt20 libgnutls30
+
+# 2) 解到私有前缀
+cd /tmp/tshark_local && for d in debs/*.deb; do dpkg -x "$d" root/; done
+
+# 3) 运行
+export LD_LIBRARY_PATH=/tmp/tshark_local/root/usr/lib/x86_64-linux-gnu
+/tmp/tshark_local/root/usr/bin/tshark -r capture.pcap
+```
+
+得到 TShark 3.6.2，`tshark -G protocols | grep bnep` 确认
+`Bluetooth BNEP Protocol / BT BNEP / btbnep` 存在。
+
+**冒烟测试结果（已实际执行）**——手工构造一个含 L2CAP 建链 + 本设计规定的
+BNEP 字节序列的 pcap，tshark 独立解析输出：
+
+```
+1  localhost → remote   L2CAP  Sent Connection Request (BNEP, SCID: 0x0040)
+2  remote → localhost   L2CAP  Rcvd Connection Response - Success
+3  localhost → remote   BNEP   Sent Control - Setup Connection Request
+                                 - dst: <PAN NAP>, src: <PAN PANU>
+4  remote → localhost   BNEP   Rcvd Control - Setup Connection Response
+                                 - Operation Successful
+5  11:22:33:44:55:66 → ff:ff:ff:ff:ff:ff  ARP  Who has 192.168.44.1? ...
+```
+
+这条输出**独立证实了本设计的三个关键论断**：
+
+1. `01 01 02 11 16 11 15` 就是正确的 PANU→NAP Setup Request（dst=NAP、
+   src=PANU、UUID Size=2），即 D2 的修正方案正确；
+2. `01 02 00 00` 就是标准的 4 字节 Setup Response 且 `0x0000` = *Operation
+   Successful*，即 D3/D4 的"HyperOS 非标准"判断是错的，D6 的响应码表按规范
+   重建是正确的；
+3. type=`0x00` 后跟完整 14 字节以太头的 General Ethernet 帧可被一路解析到
+   ARP，且广播 dst 保持为 `ff:ff:ff:ff:ff:ff`，即 D1 的修正方案正确。
+
+也就是说：**§3 的编码规范在写任何固件代码之前就已经被一个独立实现验证过了。**
+Gate B 剩下的工作只是把真实设备的 HCI trace 喂进同一条链路。
+
+pcap 格式要点（冒烟测试中已验证）：linktype **201**
+（`LINKTYPE_BLUETOOTH_HCI_H4_WITH_PHDR`），每包前置 **4 字节大端方向字**
+（0=Sent，1=Rcvd），随后是 H4 类型字节（ACL=`0x02`）+ ACL 头 + L2CAP 头 + 载荷。
+必须把 L2CAP 的 Connect Request/Response（PSM `0x000F`）也一并写入 pcap，
+tshark 才能把该 CID 绑定到 BNEP dissector。
+
 ## 7. 连接、角色与可发现性
 
 ### 7.1 Class of Device 必须带 Networking 位
@@ -545,4 +606,11 @@ R99 的现象是"手机约 30s 超时断链"。产品级必须能自愈：
   `sdk/middleware/bluetooth/lib/lib_bt_gcc.a`（12,174,618 字节闭源库）内，
   没有源码可移植。开源的 `bts2_app_pan.c` 只是调用方，其价值是**行为参考**
   （尤其 §4.1 的整帧传递、§4.3 的 DHCP 时序），已吸收进本设计。
+
+  补充（2026-08-20）：尝试拉取 xiaozhi 的 `sdk` submodule **已失败**
+  ——github.com 不可达（`Failed to connect to github.com port 443`，两次重试
+  均超时）。因此 xiaozhi 侧的参考仅限于仓库内已有的开源文件
+  （`bts2_app_pan.c`、`bt_lwip.c`、`app/src/main.c`、`proj.conf`），
+  这些已全部读取并吸收。**本设计不对 SDK 有任何依赖**，该失败不阻塞任何 Gate。
+  （注：pip 经镜像可用、apt 经清华镜像可用，仅 github 不可达——见 §6.2.1。）
 
