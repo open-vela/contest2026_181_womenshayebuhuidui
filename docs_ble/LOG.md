@@ -235,3 +235,72 @@
   板子需 USB 拔插后继续；② 重启后验证 br_key.bin 免配对回连；③ P4 应用层状态机。
 - 工具沉淀：ssp_trace_probe.py（createbond 全事件抓取）、phone_pair_watch.py（被动监听）、
   legacy_pin_pair.py、pan_e2e.py。
+
+## Round 9（2026-08-18/19，BNEP 全链路打通 + 配对根因总修复）
+
+### 阶段1：蓝牙栈稳定性修复
+- R64：移除 R61 探针注入（与栈 inquiry 重叠导致 LCPU 静默 + Kernel oops）
+- R65：重写 SSP 事件桥接——原 R57 把 0x23（Read_Remote_Ext_Features，标准事件）误当
+  io_capa_req（LCPU 私有）→ 桥接劫持了 zblue 原生事件 → zblue 永远等不到 features
+  完成 → createbond 不启动。改为纯事件号重映射（0x24→0x31, 0x25→0x32, 0x26→0x33,
+  0x27→0x34, 0x29→0x36），0x23/0x28/0x2b 不再劫持。
+- R66：bt_list OOM 断言改为降级告警（SRAM 90% 边缘 malloc 失败不再杀 daemon）
+- R69：zblue Set_Event_Mask 用偏移位 BIT(48..53)，LCPU 标准控制器需 BIT(35..42) →
+  SSP 事件被屏蔽。bth4 拦截 0x0c01 强制标准位（octet4|=0x78, octet5|=0x05）+ bit7
+  (0x08 Encrypt Change)。
+- R69 发现：Set_Event_Mask 在 emulate 表里被合成 CC 直接返回，改写代码永远执行不到 →
+  移出 emulate 表到"转发+合成 CC"名单。
+
+### 阶段2：BNEP 连接与 SDP
+- R76：注册 PANU SDP Service Record（BT_SDP_PANU_SVCLASS + PSM 0x000F + BNEP 协议描述）。
+- R85：L2CAP deferred 机制——板子 BNEP 通道先 LCONF_DONE → 等手机通道也 CONNECTED
+  再发 BNEP setup，避免信号通道死锁。
+- R89/R91：SDP record 精简——移除 SupportedNetworkAccessTypeList/SupportedFeatures 避免
+  zblue SDP server continuation state 格式错误（03 f0）导致手机误判 PANU 不完整。
+- R94：BNEP Setup Request 改用 128-bit NAP UUID（00001116-0000-1000-8000-00805f9b34fb）。
+- R96：接受 HyperOS 4字节 BNEP Response（标准 6 字节），单字节状态码解析。
+- **R96 后状态**：手机 BNEP Response status_byte=0x00 → 视为 SUCCESS → bt-pan 接口 UP。
+
+### 阶段3：LCPU 硬件限制与 Inquiry
+- inquiry scan activity 注入（Write_Inquiry_Scan_Activity）任何值均触发 Hardware Error 0x00
+  → 完全移除注入。只靠 Write_Scan_Enable inquiry bit 强制开启（R60）。
+- Write_SSP_Mode=1 后 LCPU 不走 legacy PIN（原 Round 4-3 有 PIN 弹窗），SSP IO 交换
+  因 mask 位错长期未生效。R69 修正后 SSP 数字比较成功。
+- inquiry num_rsp 0xff → 0x00（bth4 拦截）：LCPU 对 0xff 不回 CS。
+
+### 阶段4：PAN 数据面验证（R99，2026-08-19 首次完整 e2e）
+- 配对：io_capa_req(0x24→0x31 桥接) → io_capa_resp → user_confirm_req(passkey) → BONDED
+- 加密：encrypt_change enc=1 + security level=2
+- BNEP：conf_rsp SUCCESS → chan_connected → BNEP setup(128-bit NAP UUID) → 手机 Response
+  status=0x00 → `pan_netif_state_cb ifname:bt-pan, state:1`（接口 UP）
+- 待完成：bt-pan DHCP + ping（窗口期脚本问题——BNEP 在等待期建立后手机超时断链）
+
+### 当前阻塞
+- 手机侧"无法通信"已彻底解决（R69 mask + R65 桥接 + R96 接受 4 字节 Response）。
+- BNEP 连接已稳定建立（R99 验证）。
+- **当前卡点**：bt-pan UP 后需要立即跑 DHCP/ping，但手机约30s 后超时断链。
+  需要写一个 BNEP 成功瞬间立即切 nsh 的脚本（pan_instant.py 已写，检测逻辑修正后待测）。
+- 另一个方案：手机蓝牙共享设置里授权设备（HyperOS 可能需要显式授权该设备上网）。
+
+## Round 10（2026-08-20，开机自启后的 HardFault 根因清理）
+
+- rcS 改为自动 `bluetoothd &` + `ai_agent &` 之后，开机约 2 s 必崩：
+  `BT LW WQ` 线程（process: bluetoothd）在 arm_hardfault.c:186 断言，控制台随后静默，
+  只能物理拔插 USB 才能重新烧录。
+- 调试镜像补上故障诊断开关（`DEBUG_HARDFAULT_ALERT`/`BUSFAULT`/`USAGEFAULT`/
+  `ARCH_STACKDUMP`）与 `BOARD_RESET_ON_ASSERT=2`——断言后自动重启，既能重复取日志，
+  也自动重开 SFBL 下载窗口。改动走 `tools/mk_pandbg_config.sh` 生成器，不用
+  savedefconfig（它会 copy_if_different 回源 defconfig 并抹掉注释）。
+- 根因：zblue 的 `z_sys_init()`（SYS_INIT 表）被跑了两遍——`sf32lb52_bt_initialize()`
+  开机跑一次（group 0），`bt_sal_init()` 在 bluetoothd 里再跑一次（group 8）。
+  表里的 `k_sys_work_q_init`/`long_wq_init` 用 `K_THREAD_STACK_DEFINE()` 的静态数组建
+  线程（移植层 `pthread_attr_setstack`），第二遍等于两个线程共用同一块栈，且
+  `k_work_queue_start()` 会重初始化已有等待者的信号量。dump_tasks 里两组 sysworkq /
+  BT LW WQ 的 STACKBASE 完全相同，是直接证据。
+- 修复：① bth4 不再调 `z_sys_init()`（HCI 的 fd 在 `h4_open()` 里拿，NuttX fd 表按
+  task group，必须留给 bluetoothd）；② `z_sys_init()` 按 owner pid 探活幂等
+  （不能用一次性标志：工作队列线程是调用者的 pthread，随进程一起死，bluetoothd
+  重启后必须重跑）。
+- 连带线索：bth4 里「为绕开 sysworkq HardFault 才把 SSP 搬进驱动」的历史 workaround，
+  很可能是同一根因；按最小修复先行本轮不动。
+- 详见 `18_zblue_sys_init_duplicate_fix.md`。
