@@ -91,3 +91,30 @@ work（`bt_hci_cmd_send_sync` 之类）就会在错误的 fd 表上 `write()`。
 
 烧录后 `ps`：`sysworkq` 与 `BT LW WQ` 各只应有一份，且 GROUP 等于 `bluetoothd`
 的 group；`bluetoothd` 与 `ai_agent` 随 rcS 自启。
+
+## 验证结果（2026-08-20，pandbg 镜像，日志 `logs/boot_faultdbg.log`）
+
+```
+  PID GROUP PRI POLICY   TYPE    NPX STATE    EVENT   STACK COMMAND
+    6     6 100 RR       Task      - Waiting  Sem     0008088 bluetoothd
+    7     6 110 FIFO     pthread   - Waiting  Sem     0032688 sysworkq
+    8     6  10 FIFO     pthread   - Waiting  Sem     0008112 BT LW WQ
+    9     6 103 RR       pthread   - Waiting  Sem     0008112 bt_service_6
+   12    12 100 RR       Task      - Waiting  Signal  0032664 ai_agent -d
+```
+
+- 各一份，都在 group 6（bluetoothd）；开机不再有任何 Assertion / HardFault。
+- `bluetoothd` 与 `ai_agent -d` 均由 rcS 自启。
+- `bttool` → `enable` 全程正常：adapter state 1→2→3→4，
+  `[pan] BNEP server register (psm 0x000f) ret=0`、
+  `[pan] PANU SDP record register ret=0`，
+  `Adapter Name: Agent-Watch-cd:ab:78:56:34:12, Class: 0x002A0704, Mode:1`
+  （bth4 的 R92 补丁把下发给 LCPU 的 CoD 改写成 0x020510/PANU）。
+- `set scanmode 2` 成功（Write_Scan_Enable 0x03，inquiry + page scan 都开），
+  手机可发现。
+- `/data/misc/bt/bt_storage.db` 存在（12288 B），bond 数据库跨重启保留。
+- `pan` 子命令：`pan connect <addr> <dstrole> <srcrole>`、`pan disconnect <addr>`、
+  `pan dump`。
+- 注：`enable` 之后 group 6 里会多出一个名为 `sysworkq`、栈 8112 B 的线程
+  （pid 42，栈基址与 pid 7 那块 32688 B 静态栈不同），是 SAL 侧另建的队列线程，
+  与本文修的重复初始化无关。

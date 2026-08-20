@@ -7,7 +7,7 @@
 
 | 阶段 | 文件 | 变更内容 |
 |------|------|----------|
-| P0 | `vendor/sifli/.../rcS` | 添加 `rm -rf /data/misc/bt` + `bluetoothd &` |
+| P0 | `vendor/sifli/.../rcS` | 改成三行 `bluetoothd & / sleep 2 / ai_agent -d &`（去掉 audio_setup 与 rm -rf /data/misc/bt） |
 | P0 | `contest.../defconfig` | `BT_MAX_CONN=1→2`, 添加 `HCI_AUTO_REPLY_IN_JUST_WORK=y` |
 | P1 | `frameworks/.../bluetooth_define.h` | `DEFAULT_IO_CAPABILITY` 改为 `BT_IO_CAPABILITY_DISPLAYYESNO` |
 | P1 | `frameworks/.../sal_adapter_interface.c` | `zblue_on_pairing_confirm` 添加 auto-accept |
@@ -18,6 +18,8 @@
 
 ### rcS (vendor/sifli/boards/sf32lb52/sf32lb52_devkit_lcd/src/etc/init.d/rcS)
 
+调试期一度写成这样：
+
 ```bash
 audio_setup
 rm -rf /data/misc/bt    # 清除旧 link key，防 bt_list 崩溃
@@ -25,6 +27,25 @@ bluetoothd &             # 自动启动蓝牙守护进程
 sleep 2
 ai_agent -d &
 ```
+
+三处都是坑，最终版只剩三行（详见文件顶部注释）：
+
+```bash
+bluetoothd &
+sleep 2
+ai_agent -d &
+```
+
+- `audio_setup` 在本树任何配置里都不是 builtin，`nsh_initscript()` 不带
+  IGNORE 标志，脚本第一条失败就把下面所有行丢掉——bluetoothd/ai_agent 从来
+  没被启动过。
+- `rm -rf /data/misc/bt` 每次开机都把 bond 数据库和 `last_nap` 删掉：手机每
+  次复位后都要重新配对，PAN 自动回连也没有目标地址。目录由 bluetoothd 的
+  `create_bt_folder()` 自己建（EEXIST 当成功），脚本不该碰。
+- `mkdir -p /data/misc/bt` 同样违反「不能有失败命令」：`cmd_mkdir` 直接返回
+  `mkdir()` 的原始结果，`-p` 只压掉错误信息，返回值仍是 -1。
+- 另外 NSH 的 `CONFIG_NSH_LINELEN=64`，脚本每行必须短于 64 字符，否则超出部分
+  会被当成下一条命令。
 
 ### defconfig 变更
 
@@ -89,7 +110,7 @@ static void zblue_on_pairing_confirm(struct bt_conn* conn)
 - `keys_br.c`: 文件式 BR key store → `/data/misc/bt/br_key.bin`
 - `ssp.c`: `bt_keys_link_key_store()` 在 link key notification 后调用
 - `ssp.c`: `bt_keys_link_key_load_file()` 在 RAM miss 时从文件恢复
-- rcS: `rm -rf /data/misc/bt` 清除旧 key（防格式不兼容）
+- rcS：**不**清除 `/data/misc/bt`——保留 bond 数据库与 `last_nap` 才有免配对回连
 
 ## P3: BNEP 加密配置
 
