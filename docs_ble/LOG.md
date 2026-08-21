@@ -404,6 +404,7 @@
   3. **clang-format 是硬门禁**：本仓 `.clang-format` 为 `BasedOnStyle: WebKit`，
      一行式 `if (x) { body; }` 与 Allman 的 `if (x)\n{` 都违规。021919aa 里 11 处
      NULL 守卫 + 2 处 OOM 守卫全部重排。
-- 三个 PR 的 checkpatch / clang-format / CLA 现已全绿，`ci_dev` 多平台构建矩阵
-  （aurix/flagchip/goldfish/qemu/sil）耗时较长，提交时仍在跑。
+- 三个 PR 现已 **CI 全绿且 MERGEABLE**：checkpatch / clang-format / CLA 之外，`ci_dev`
+  的五个平台构建矩阵（aurix/flagchip/goldfish/qemu/sil）也全部通过（zblue 10 pass、sifli
+  10 pass、bluetooth 11 pass，各跳过 1 个只对 trunk 跑的 ci_trunk）。
 - 回填 PR 链接到 21/23/24 号文；23 号文补了上面三类门禁问题的排查记录。

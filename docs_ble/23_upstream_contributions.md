@@ -93,13 +93,14 @@ release 下被编掉）。任何未注册的池，其 buffer 会拿到 `_net_buf
 
 三个 PR 均已提交至 `open-vela/*` 的 `dev-ai-contest-2026` 分支，等待组委会 review：
 
-| PR | 门禁检查 |
-|----|----------|
-| [external_zblue#231](https://github.com/open-vela/external_zblue/pull/231) | checkpatch ✅　clang-format ✅　CLA ✅ |
-| [vendor_sifli#29](https://github.com/open-vela/vendor_sifli/pull/29) | checkpatch ✅　CLA ✅ |
-| [frameworks_bluetooth#591](https://github.com/open-vela/frameworks_bluetooth/pull/591) | checkpatch ✅　clang-format ✅　CLA ✅ |
+| PR | commit 数 | CI | 可合并性 |
+|----|-----------|-----|----------|
+| [external_zblue#231](https://github.com/open-vela/external_zblue/pull/231) | 4 | **全绿**（10 pass / 1 skip） | MERGEABLE |
+| [vendor_sifli#29](https://github.com/open-vela/vendor_sifli/pull/29) | 15 | **全绿**（10 pass / 1 skip） | MERGEABLE |
+| [frameworks_bluetooth#591](https://github.com/open-vela/frameworks_bluetooth/pull/591) | 36 | **全绿**（11 pass / 1 skip） | MERGEABLE |
 
-（`ci_dev` 的多平台构建矩阵 aurix/flagchip/goldfish/qemu/sil 耗时较长，提交时仍在跑。）
+绿的项目包括 checkpatch、clang-format、CLA，以及 `ci_dev` 的五个平台构建矩阵
+（aurix / flagchip / goldfish / qemu / sil）。跳过的是 `ci_trunk`（只对 trunk 分支跑）。
 
 ### 提交过程中修掉的三类门禁问题
 

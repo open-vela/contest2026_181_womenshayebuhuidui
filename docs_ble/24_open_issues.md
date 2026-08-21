@@ -125,5 +125,5 @@ PAN」），改 README 时一并更新。
 按《大赛总览》，除代码与 AI 日志外还需要：介绍文档（.docx/.pdf/.pptx）、5 分钟以内的
 演示视频；若使用 AI Coding 则**至少提供一个可复用的 Skill**。这些都还没做。
 
-三个公共仓的 PR 已提交（zblue#231、sifli#29、bluetooth#591，门禁检查全绿，等组委会
+三个公共仓的 PR 已提交（zblue#231、sifli#29、bluetooth#591，CI 全绿、MERGEABLE，等组委会
 review），索引见 23 号文。
