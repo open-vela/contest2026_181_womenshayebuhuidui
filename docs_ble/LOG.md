@@ -304,3 +304,43 @@
 - 连带线索：bth4 里「为绕开 sysworkq HardFault 才把 SSP 搬进驱动」的历史 workaround，
   很可能是同一根因；按最小修复先行本轮不动。
 - 详见 `18_zblue_sys_init_duplicate_fix.md`。
+
+## Round 11（2026-08-21，PAN 上网彻底打通 🎉 —— 三个平台移植层根因）
+
+- BNEP TX 的 `tailroom=249` / `encode failed -2` 卡了好几轮，根因不在 MTU 配置，而是
+  **`pan_tx_pool` 从没注册进 zblue NuttX port 的 `_net_buf_pool_list[]`**。`pool_id()`
+  遍历该数组反查指针，找不到时 `__ASSERT` 在 release 下被编掉、静默返回 0，于是 buf
+  带着 `pool_id=0` 去 `fixed_data_alloc()`，拿的是 `_net_buf_pool_list[0]`
+  （`discardable_pool`，258 → tailroom 249）的尺寸**和它的 data_pool 基址**。
+  R75/R78 那个「3 字节 Setup Request 在线上变 8 字节垃圾」也是同一件事——不是
+  `NET_BUF_POOL_FIXED_DEFINE` 坏了，是缺注册。SPP 的 `rfcomm_tx_pool` 同坑。
+- 修完池，DHCP 一发就 `Hardware error, hardware code: 0`，之后 LCPU 停回 NoCP、ACL
+  信用耗尽、刷 `Unable to allocate buffer within timeout`。根因是**邮箱 ring 分块写入
+  会回退 LCPU 的读指针**：`read_idx_mirror`（LCPU 写）和 `write_idx_mirror`（HCPU 写）
+  同一条 D-cache line，`ring_write()` 结尾的 `up_clean_dcache()` 把陈旧 read_idx 一起
+  写回；旧代码先单独写 1 字节 H4 type 并触发中断，精确打开了这个窗口。改成整帧一次
+  写入，并把 bth4 合成的 ACL_Data_Packet_Length 压到 `492-1-4=487`（ring 可用 492）。
+  比 487 长的 PDU 由 zblue 正常 ACL 分片，`ping -s 1472` 验证这条路径。
+- DHCP 拿不到租约的第三件事：Android dnsmasq 用**单播** OFFER 回 yiaddr，而 bt-pan
+  还是 0.0.0.0，`ipv4_input()` 无从匹配。置 `CONFIG_NETUTILS_DHCPC_BOOTP_FLAGS=0x8000`
+  （RFC 1542 广播位）后一次成功。
+- 数据一流动 NSH 就在 `getenv()` HardFault，且 `.bss` 一变崩点就转移：`up_allocate_heap()`
+  把 SRAM 顶 0x2007FB00..0x20080000（两个邮箱 buffer + custom config）算进了堆，
+  LCPU 写 HCI 字节 = 直接改写 malloc 出来的对象。堆上界限到 0x2007FB00；为补回
+  1,280 字节，`pan_tx_pool` buffer 数 4→2（净 +2.2 KB）。20 号文里 unqlite 文件句柄
+  被写坏那个案子是同一根因家族。
+- 开机自动连接补两处：`last_nap` 缺失时从 bond list 回退；连上后回写 `last_nap`。
+  旧固件配过对的表以前冷启动永远不自动上网。
+- 验证（正式 ai_agent 镜像，非 pandbg）：Gate B 网关/公网/DNS/1472B 全 0% 丢包；
+  Gate D 手机侧断链后自动重连并重新 DHCP；Gate E 冷启动无人干预 `dhcp_ok` +
+  `netmgr Active channel: bt-pan (primary)`；Gate F 两分钟流量前后堆用量无增长。
+  SRAM 474,360 B / 90.48%。
+- 遗留（与 PAN 无关，未修）：XIP 下 NOR 写路径未全部 RAM 驻留——
+  `sf32lb_flash_preinit_runtime()` 自己是 RAMFUNC，但它调的 `HAL_FLASH_PreInit` /
+  `ISSUE_CMD(RST)` / `SET_QUAL_SPI` 都在 XIP flash 里，等于给自己取指的 flash 发
+  RESET、切模式，靠 I-cache 侥幸活着。非正常掉电后 littlefs mount 的恢复写入会命中，
+  开机间歇性 HardFault 且一旦中招每次都中。恢复用 `logs/erase_data.py`
+  （擦 `0x129A0000:0x400000`）。修复方向：整条调用链 `__ramfunc` 化。
+- 吞吐仍无数字：镜像里没有 iperf / wget，ping 只能测延迟。
+- 详见 `21_pan_breakthrough_authoritative.md`（权威版，取代 10/11/17 里关于 BNEP TX
+  失败的推测性结论）。

@@ -188,6 +188,7 @@ CONFIG_NET_TCPBACKLOG=y
 CONFIG_NET_TCP_DELAYED_ACK=y
 CONFIG_NET_TCP_KEEPALIVE=y
 CONFIG_NET_TCP_WRITE_BUFFERS=y
+CONFIG_NET_BINDTODEVICE=y
 CONFIG_NET_UDP=y
 CONFIG_NET_UDP_WRITE_BUFFERS=y
 CONFIG_NET_BROADCAST=y
@@ -225,6 +226,11 @@ CONFIG_DEBUG_MM=y
 CONFIG_DEBUG_MM_ERROR=y
 # Local Bluetooth name (visible when pairing from a phone)
 CONFIG_BT_DEVICE_NAME="Agent-Watch"
+# BNEP needs full-length TX buffers (1691 MTU + 4 L2CAP header).
+# The default 27 is BLE-only and produces zero-tailroom net_buf for BNEP.
+CONFIG_BT_BUF_ACL_TX_SIZE=1695
+# Also bump L2CAP TX MTU for BNEP (default 253 is BLE-only)
+CONFIG_BT_L2CAP_TX_MTU=1691
 # Trim zblue buffers to fit .bss in 512K SRAM (GATT server adds ~70K)
 CONFIG_BT_BUF_ACL_TX_COUNT=5
 # Down from 5: BT_BUF_ACL_RX_SIZE goes to 1695 for full-length BNEP PDUs, so
@@ -333,12 +339,18 @@ CONFIG_LV_FONT_MONTSERRAT_48=y
 # PAN internet access: DHCP client for bt-pan (ifconfig bt-pan dhcp) + ping for verification
 CONFIG_NETUTILS_DHCPC=y
 CONFIG_SYSTEM_PING=y
+# Android's tethering dnsmasq answers DISCOVER with a *unicast* OFFER addressed
+# to the yiaddr it just picked (192.168.44.x). bt-pan still has 0.0.0.0 at that
+# point, so ipv4_input() has nothing to match it against. RFC 1542 says a
+# client that cannot receive unicast before being configured must set the
+# BROADCAST flag; then the OFFER/ACK arrive at 255.255.255.255 and are accepted.
+CONFIG_NETUTILS_DHCPC_BOOTP_FLAGS=0x8000
 
 # R77: full BNEP Ethernet PDU in zblue global ACL pool (removes corrupt dedicated PAN pool)
-# TX_MTU stays at 253 on purpose: the BR/EDR send path checks the *negotiated*
-# br_chan->tx.mtu (zblue classic/l2cap_br.c:1906) and never reads this symbol,
-# so raising it would only enlarge every TX buffer for no gain.
-CONFIG_BT_L2CAP_TX_MTU=253
+# TX_MTU raised to 1691: acl_tx_pool is sized by BT_L2CAP_BUF_SIZE(TX_MTU),
+# and BNEP data frames need up to 1691 bytes. The old comment about "never
+# reads this symbol" was wrong — the pool uses it at compile time.
+# CONFIG_BT_L2CAP_TX_MTU=1691  (set at line 233, no duplicate needed)
 # A NAP peer may send us a full 1691-byte BNEP PDU. At the old 1025 the ACL
 # reassembly buffer truncated large inbound frames, which shows up as stalled
 # TCP downloads rather than an obvious error. 1695 = 1691 + 4 bytes of L2CAP
