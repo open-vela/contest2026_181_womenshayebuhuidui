@@ -383,3 +383,27 @@
   ACL 包长提吞吐已无余量）；P2 是 `vendor/sifli` 里三个被跟踪的构建产物、README 仍为
   模板、以及介绍文档/演示视频/可复用 Skill 尚未准备。
 - 安装 `gh` CLI 到 `~/.local/bin/gh`（v2.63.2），等 token 就能代做 fork + push + PR。
+
+## Round 14（2026-08-21，三个公共仓 PR 已提交）
+
+- fork + push + PR 一次跑完（`upstream_patches/do_fork_pr.sh`，幂等）：
+  [external_zblue#231](https://github.com/open-vela/external_zblue/pull/231)、
+  [vendor_sifli#29](https://github.com/open-vela/vendor_sifli/pull/29)、
+  [frameworks_bluetooth#591](https://github.com/open-vela/frameworks_bluetooth/pull/591)，
+  均以 `dev-ai-contest-2026` 为 base，粒度按「整条线一起提」。
+- `gh auth login` 硬性要求 `repo` + `read:org` 两个 scope，而我们只需要 `public_repo`；
+  改走 `GH_TOKEN` 环境变量喂 token，跳过登录期 scope 校验，权限仍由 GitHub 按 token
+  真实 scope 判定——建 fork / 推分支 / 开 PR 全部够用。
+- 修掉三类门禁问题（都不是功能缺陷，但直接卡 PR）：
+  1. **CLA 认不出假身份**：早期若干 commit 作者是 `zcode <zcode@local>`（工具默认身份），
+     CLA 机器人无法对应到 GitHub 账号，报 `CLA required for 1/3 contributor(s)`。用
+     `git filter-branch --env-filter` 改写为真实贡献者，`git diff` 验证树内容零变化，
+     force-with-lease 推回。**教训：新仓开工前先设好真实 `user.name`/`user.email`。**
+  2. **commit message 与源码注释都不许有中文**：checkpatch 里的 `chinese-detector`
+     分开检查两者。一条 commit message（`"PIN错误"`）+ 三处源码注释被拦下。
+  3. **clang-format 是硬门禁**：本仓 `.clang-format` 为 `BasedOnStyle: WebKit`，
+     一行式 `if (x) { body; }` 与 Allman 的 `if (x)\n{` 都违规。021919aa 里 11 处
+     NULL 守卫 + 2 处 OOM 守卫全部重排。
+- 三个 PR 的 checkpatch / clang-format / CLA 现已全绿，`ci_dev` 多平台构建矩阵
+  （aurix/flagchip/goldfish/qemu/sil）耗时较长，提交时仍在跑。
+- 回填 PR 链接到 21/23/24 号文；23 号文补了上面三类门禁问题的排查记录。

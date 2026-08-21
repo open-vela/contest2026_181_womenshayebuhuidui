@@ -30,7 +30,7 @@ manifest revision 覆盖、也没有要求团队仓记录上游 PR）。团队�
 | 文件 | `port/sections/defines.c`（+28 行） |
 | 本地 commit | `d9fb8207cc1` |
 | 分支 | `pan/netbuf-pool-registration` |
-| PR | _待创建_ |
+| PR | **https://github.com/open-vela/external_zblue/pull/231** |
 
 zblue 的 NuttX port 用手写数组 `_net_buf_pool_list[]` 代替 Zephyr 的 linker section 收集
 net_buf 池。`pool_id()` 遍历该数组反查指针，**找不到时静默返回 0**（`__ASSERT` 在
@@ -48,9 +48,9 @@ release 下被编掉）。任何未注册的池，其 buffer 会拿到 `_net_buf
 | | |
 |---|---|
 | 文件 | `chips/sf32lb52/sf32lb52_bt_adapter.c/.h`、`sf32lb52_bth4.c`、`sifli_allocateheap.c`（4 文件，+116/−105） |
-| 本地 commit | `db73380` |
+| 本地 commit | `434ffbe` |
 | 分支 | `bletest` |
-| PR | _待创建_ |
+| PR | **https://github.com/open-vela/vendor_sifli/pull/29** |
 
 三件事必须同时生效才自洽，所以在一个 commit 里：
 
@@ -74,9 +74,9 @@ release 下被编掉）。任何未注册的池，其 buffer 会拿到 `_net_buf
 | | |
 |---|---|
 | 文件 | `service/stacks/zephyr/sal_pan_interface.c`、`service/profiles/pan/panu_service.c`（+121/−34） |
-| 本地 commit | `ec9ad5c5` |
-| 分支 | `bletest`（该分支相对上游共 34 个 commit，是 PAN/BNEP 整条线） |
-| PR | _待创建_ |
+| 本地 commit | `215d2cd8` |
+| 分支 | `bletest`（相对上游共 36 个 commit，是 PAN/BNEP 整条线 + 两个 style 修正） |
+| PR | **https://github.com/open-vela/frameworks_bluetooth/pull/591** |
 
 - BNEP TX 池按 1691 MTU 正确取到尺寸后，去掉调试期的诊断脚手架，改为单次分配 +
   100 ms 等待，并加 `tx_nobuf` 计数以区分「池耗尽」和「池坏了」。
@@ -89,10 +89,33 @@ release 下被编掉）。任何未注册的池，其 buffer 会拿到 `_net_buf
 > （含若干后来被替代的中间方案）。发 PR 时可选择整条线一起提（体现完整工作量），
 > 或另开分支只提 `ec9ad5c5` 这类最终结论（便于 review）。
 
-## 提交状态与操作步骤
+## 提交状态
 
-三个公共仓截至本文档写作时**都还没有 Sen70s fork**，改动已在本地各仓提交完毕。
-fork / push / PR 的具体命令、patch 备份、以及注意别带上的构建产物，见工作区根目录
-`upstream_patches/README.md`（该目录故意不在团队仓内，避免又变成代码副本）。
+三个 PR 均已提交至 `open-vela/*` 的 `dev-ai-contest-2026` 分支，等待组委会 review：
 
-PR 创建后请回填上面三张表的「PR」行，让这篇索引保持可用。
+| PR | 门禁检查 |
+|----|----------|
+| [external_zblue#231](https://github.com/open-vela/external_zblue/pull/231) | checkpatch ✅　clang-format ✅　CLA ✅ |
+| [vendor_sifli#29](https://github.com/open-vela/vendor_sifli/pull/29) | checkpatch ✅　CLA ✅ |
+| [frameworks_bluetooth#591](https://github.com/open-vela/frameworks_bluetooth/pull/591) | checkpatch ✅　clang-format ✅　CLA ✅ |
+
+（`ci_dev` 的多平台构建矩阵 aurix/flagchip/goldfish/qemu/sil 耗时较长，提交时仍在跑。）
+
+### 提交过程中修掉的三类门禁问题
+
+记下来供后来人参考，这三条都不是功能缺陷，但会直接卡住 PR：
+
+1. **CLA 认不出假身份。** 早期若干 commit 的作者是 `zcode <zcode@local>`（工具默认
+   身份），CLA 机器人无法把它对应到任何 GitHub 账号，报
+   `CLA required for 1/3 contributor(s)`。用 `git filter-branch --env-filter` 把这些
+   commit 的作者改写为真实贡献者，树内容零变化。**新仓开工前先把 `user.name` /
+   `user.email` 设成真实身份**，比事后改写省事得多。
+2. **commit message 与源码注释都不许有中文。** checkpatch 里有一道
+   `chinese-detector`，commit message 和源文件分开检查。本次一条 commit message
+   （`"PIN错误"`）和三处源码注释被拦下。
+3. **clang-format 是硬门禁。** 本仓 `.clang-format` 是 `BasedOnStyle: WebKit`：
+   `if (x) { body; }` 这种一行式、以及 Allman 风格的 `if (x)\n{`，都会被判违规——
+   要么单语句不带花括号，要么左花括号跟在 `if` 同一行、body 独占一行。
+
+本地 patch 备份与命令留在工作区根 `upstream_patches/`（该目录故意不在团队仓内，避免
+又变成代码副本）。

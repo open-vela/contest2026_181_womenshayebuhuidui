@@ -460,12 +460,16 @@ checkout 它。现已直接在该仓 `bletest` 分支提交（`ec9ad5c5`）。
 
 各仓提交与交付路径（本轮）：
 
-| 仓 | 分支 | 本轮 commit |
-|----|------|-------------|
-| `frameworks/connectivity/bluetooth` | `bletest` | `ec9ad5c5` |
-| `external/zblue/zblue` | `pan/netbuf-pool-registration` | `d9fb8207cc1`、`fd08343f837` |
-| `vendor/sifli` | `bletest` | `db73380` |
-| `contest2026_181_womenshayebuhuidui` | `feat/ai-agent-contest` | `b3b148c`、`d70a19d` 及本次 |
+| 仓 | 分支 | 本轮 commit | 上游 PR |
+|----|------|-------------|---------|
+| `frameworks/connectivity/bluetooth` | `bletest` | `215d2cd8` | [#591](https://github.com/open-vela/frameworks_bluetooth/pull/591) |
+| `external/zblue/zblue` | `pan/netbuf-pool-registration` | `d9fb8207cc1`、`fd08343f837` | [#231](https://github.com/open-vela/external_zblue/pull/231) |
+| `vendor/sifli` | `bletest` | `434ffbe` | [#29](https://github.com/open-vela/vendor_sifli/pull/29) |
+| `contest2026_181_womenshayebuhuidui` | `feat/ai-agent-contest` | `b3b148c`、`d70a19d` 及本次 | 团队仓，走专属仓 PR |
+
+三个公共仓的 PR 索引见 `23_upstream_contributions.md`。注意 bluetooth 与 sifli 的
+commit SHA 与首次提交时不同：为通过 CLA 门禁改写过 commit 作者（假身份
+`zcode@local` → 真实贡献者），树内容零变化。
 
 ---
 
