@@ -346,3 +346,23 @@
   正常水平，未随时间恶化），堆用量首尾持平（1,100,304 → 1,100,296）。判定通过。
 - 详见 `21_pan_breakthrough_authoritative.md`（权威版，取代 10/11/17 里关于 BNEP TX
   失败的推测性结论）。
+
+## Round 12（2026-08-21，交付整理：指南文档 + 各仓归位）
+
+- 写 `22_pan_engineering_guide.md`：把 11 轮沉淀提炼成四条硬规则（net_buf 池必须注册、
+  SRAM 顶 0x2007FB00 以上不属于我们、一个 H4 帧必须一次写进 ring、串口 RTS 接板子电源）
+  + 症状→先查什么对照表 + 真机验证口径 + 大赛交付路径 + 历史坑一句话版。
+- **纠正一个误判**：上一轮以为 `frameworks/connectivity/bluetooth` 不受 git 跟踪（因为
+  `frameworks/connectivity/.gitignore` 有 `/*/`），把两个 PAN 文件做成了
+  `docs_ble/fw_patches/` 快照。实际上那个目录本身就是独立 repo project
+  （`openvela.xml:152`，`frameworks_bluetooth`），父仓忽略它正是因为 repo 单独 checkout。
+  已直接在该仓 `bletest` 分支提交 `ec9ad5c5`，并删掉团队仓里的代码副本。
+- 大赛同步审计结果：4 个 `<linkfile>` 全部在位且指向团队仓；`ai_agent/defconfig` 与
+  `out/nuttx_contest_board_ai_agent/.config` 关键符号逐一一致（`BT_L2CAP_TX_MTU=1691`、
+  `BT_BUF_ACL_TX_SIZE=1695`、`NETUTILS_DHCPC_BOOTP_FLAGS=0x8000`、`NET_BINDTODEVICE=y`
+  等），`BT_L2CAP_TX_BUF_COUNT=5`/`BT_CONN_FRAG_COUNT=2` 未写入 defconfig 但等于 Kconfig
+  默认值，`SF32LB52_BT_TRACE` 两边都不存在（正式镜像 trace 关闭，符合预期）。
+- 待办（需要人工在 GitHub 上操作）：`open-vela/frameworks_bluetooth`、`external_zblue`、
+  `vendor_sifli` 三个公共仓**尚无 Sen70s fork**，公共仓改动按规则要 fork + PR 到
+  `dev-ai-contest-2026`；团队仓 `README.md` 仍是组委会模板，README 第六节要求提交前
+  替换为作品说明。

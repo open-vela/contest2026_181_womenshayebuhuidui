@@ -27,6 +27,9 @@
 - [02_pan_feasibility.md](02_pan_feasibility.md) — PAN / IPSP / 6LoWPAN 可行性论证
 - [03_fragmentation_fix.md](03_fragmentation_fix.md) — 关键突破：分片缺陷发现与修复
 - [04_verification_plan.md](04_verification_plan.md) — 真机联调验证步骤
+- [21_pan_breakthrough_authoritative.md](21_pan_breakthrough_authoritative.md) — **PAN 上网打通（权威版）**：三个根因的完整证据链 + Gate B/D/E/F 验证结果
+- [22_pan_engineering_guide.md](22_pan_engineering_guide.md) — **工程指南**：四条硬规则、症状→先查什么、验证口径、大赛交付路径
+- [LOG.md](LOG.md) — 逐轮调试日志（Round 1–12）
 
 ## 验证环境
 

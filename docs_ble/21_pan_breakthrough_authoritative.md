@@ -448,14 +448,24 @@ HAL_FLASH_CLR_PROTECT(hflash);
 | contest | `board/contest_board/configs/ai_agent/defconfig` | `CONFIG_NETUTILS_DHCPC_BOOTP_FLAGS=0x8000` |
 | contest | `board/contest_board/configs/ai_agent_pandbg/defconfig` | 由 `mk_pandbg_config.sh` 同步重生成 |
 
-**注意 `frameworks/connectivity/bluetooth` 不在任何仓的 git 管理内**——
-`frameworks/connectivity/.gitignore` 里的 `/*/` 把所有一级子目录都忽略了，该仓实际
-只跟踪 20 个 CI 模板文件。所以这两个文件以整文件快照放在
-`docs_ble/fw_patches/`，用法见那里的 README（与 `app_patches/` 同一套做法）。
+**四个仓都能正常提交。** 早前以为 `frameworks/connectivity/bluetooth` 不受任何仓
+跟踪（因为 `frameworks/connectivity/.gitignore` 里有 `/*/`），一度把这两个文件做成
+`docs_ble/fw_patches/` 快照——**那是误判并已撤销**：该目录本身就是一个独立的 repo
+project（`openvela.xml:152`，`frameworks_bluetooth`），父仓忽略它正是因为 repo 单独
+checkout 它。现已直接在该仓 `bletest` 分支提交（`ec9ad5c5`）。
 
 测试脚本（`docs_ble/tools/`）：`pan_soak.py`（长稳）、`erase_data.py`（擦 /data
 恢复）、`nsh2.py`（不抖 RTS 的 NSH 执行器——**RTS 接板子电源，用默认参数 open
-串口等于给板子断一次电**）。运行时的日志落在未纳入版本控制的 `logs/`。
+串口等于给板子断一次电**）。运行时的日志落在工作区 `logs/`（不纳入版本控制）。
+
+各仓提交与交付路径（本轮）：
+
+| 仓 | 分支 | 本轮 commit |
+|----|------|-------------|
+| `frameworks/connectivity/bluetooth` | `bletest` | `ec9ad5c5` |
+| `external/zblue/zblue` | `pan/netbuf-pool-registration` | `d9fb8207cc1`、`fd08343f837` |
+| `vendor/sifli` | `bletest` | `db73380` |
+| `contest2026_181_womenshayebuhuidui` | `feat/ai-agent-contest` | `b3b148c`、`d70a19d` 及本次 |
 
 ---
 
