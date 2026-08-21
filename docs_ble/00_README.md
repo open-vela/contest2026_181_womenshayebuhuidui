@@ -29,6 +29,8 @@
 - [04_verification_plan.md](04_verification_plan.md) — 真机联调验证步骤
 - [21_pan_breakthrough_authoritative.md](21_pan_breakthrough_authoritative.md) — **PAN 上网打通（权威版）**：三个根因的完整证据链 + Gate B/D/E/F 验证结果
 - [22_pan_engineering_guide.md](22_pan_engineering_guide.md) — **工程指南**：四条硬规则、症状→先查什么、验证口径、大赛交付路径
+- [23_upstream_contributions.md](23_upstream_contributions.md) — **公共仓贡献索引**：按大赛规则走 PR 的三项平台底层改动
+- [24_open_issues.md](24_open_issues.md) — **遗留问题清单**（P0 NOR/XIP、假 BD 地址、吞吐、交付物缺口）
 - [LOG.md](LOG.md) — 逐轮调试日志（Round 1–12）
 
 ## 验证环境
