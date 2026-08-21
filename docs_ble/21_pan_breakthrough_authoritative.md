@@ -454,9 +454,10 @@ HAL_FLASH_CLR_PROTECT(hflash);
 project（`openvela.xml:152`，`frameworks_bluetooth`），父仓忽略它正是因为 repo 单独
 checkout 它。现已直接在该仓 `bletest` 分支提交（`ec9ad5c5`）。
 
-测试脚本（`docs_ble/tools/`）：`pan_soak.py`（长稳）、`erase_data.py`（擦 /data
-恢复）、`nsh2.py`（不抖 RTS 的 NSH 执行器——**RTS 接板子电源，用默认参数 open
-串口等于给板子断一次电**）。运行时的日志落在工作区 `logs/`（不纳入版本控制）。
+测试脚本（`docs_ble/tools/`）：`flash_rts.py`（烧录，抢 ROM bootloader 窗口）、
+`pan_soak.py`（长稳）、`erase_data.py`（擦 /data 恢复）、`nsh2.py`（不抖 RTS 的 NSH
+执行器——**RTS 接板子电源，用默认参数 open 串口等于给板子断一次电**）。运行时的日志
+落在工作区 `logs/`（不纳入版本控制）。
 
 各仓提交与交付路径（本轮）：
 

@@ -125,6 +125,7 @@ BNEP 侧没问题，问题在上面。
 
 | 脚本 | 用途 |
 |------|------|
+| `flash_rts.py` | 烧录：后台起 sftool，主线程用 RTS 断电再上电抢 ROM bootloader 窗口 |
 | `nsh2.py` | 不抖 RTS 的 NSH 执行器，日常敲命令用这个 |
 | `pan_soak.py` | 长稳：每 60 s 一轮小包+大包+`free`，统计 assert/断链/丢包/堆 |
 | `erase_data.py` | 擦 `/data` littlefs 分区，从第五节那个缺陷里恢复 |
