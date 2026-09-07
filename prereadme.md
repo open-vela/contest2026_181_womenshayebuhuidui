@@ -37,19 +37,31 @@ zblue 也没有 BNEP 实现。我们补齐了 BNEP 编解码与 PAN SAL，并在
 | 断链自动恢复 | ✅ 完成 | 手机侧断链后按退避自动重连并重新 DHCP |
 | 长时间稳定性 | ✅ 完成 | 60.6 分钟 / 60 轮：0 assert、0 断链，堆用量首尾持平（无泄漏） |
 | BR/EDR 配对（SSP） | ✅ 完成 | HyperOS 手机 JUST_WORKS 自动接受，link key 落盘 |
-| LVGL 显示与 UI 页面 | ✅ 可用 | `CONFIG_AI_AGENT_LVGL_UI=y`，launcher / about 等页面 |
-| 端侧语音命令识别 | ✅ 可用 | `app/ai_agent/speech/`，TFLite 命令词模型 |
+| LVGL 显示与 UI 页面 | ✅ 可用 | `CONFIG_AI_AGENT_LVGL_UI=y`，launcher / about 等页面；桌面显示 bt-pan 的 IP；桌宠页有历史对话窗口 |
+| 触摸输入 | ✅ 完成 | FT6146；修掉了「武装边沿中断前没排空锁存 INT」导致触摸全程无响应的缺陷 |
+| 端侧语言模型（velaAI TFLM） | ✅ 完成 | 与蓝牙合并进同一份固件；云端不可用时自动兑底，`ask <问题>` 即可 |
+| 网络对时 | ✅ 完成 | 自实现 SNTP（`src/infra/time_sync.c`），联网后约 3 s 内对上；`timesync` 可手动重试 |
+| 端侧语音命令识别 | 🔄 未并入 | 代码在 `app/ai_agent/speech/`，尚未并进当前全局固件 |
 
-固件规模：SRAM 474,360 B / 512 KB（90.48%）。
+固件规模：flash 7,623,176 B / 9,792 KB（76.03%，镜像区上界由 /data 分区决定），
+SRAM 426,912 B / 512 KB（81.43%）。
 
 ### 进行中 / 未完成
 
-- LLM 对话链路端到端联调（网络通道已就绪，云侧接入与 UI 呈现在迭代）
+- 云端 LLM 尚未接入（板子上没配 API key）。这不阻塞对话：云端不可用时会自动兑底到
+  端侧模型，实测能正确回答域内问题
+- 端侧推理耗时 17～47 s。曾以为是 tensor arena 放在 PSRAM 导致，腾出 SRAM 搬回去之后
+  实测没有变化——瓶颈在每 token 从 XIP flash 读 3 MB 权重、以及两段式生成约 96 次前向，
+  待单独一轮优化
+- 端侧语音命令识别（mic + VAD + 命令词）尚未并进全局固件
+- 触摸屏还没法直接向 agent 提问，入口只有 NSH `ask`
 - 吞吐量实测（镜像里没有 iperf / wget，`ping` 只能测延迟；见 `docs_ble/24` P1）
-- 一个已知的平台缺陷未修：XIP 下 NOR 写路径未全部 RAM 驻留，非正常掉电后可能损坏
-  `/data`（见 `docs_ble/24` P0，含恢复手段）
 - 本机蓝牙地址是硬编码假值，多台设备会撞地址（见 `docs_ble/24` P1）
 - 大赛要求的介绍文档、演示视频、可复用 Skill 尚未准备
+- `time()` 返回的是本地时间而非 UTC（`CONFIG_LIBC_LOCALTIME` 未开，`TZ` 无效，改成 RTC 直接存本地时间）。接需要 UTC 时间戳签名的云 API 时要在调用点把 8 小时减回去
+
+> XIP 下 NOR 复位窗口那个 P0（非正常掉电可能损坏 `/data`）已在 Round 15 修复，
+> Round 16 用「写入过程中硬复位」跑了 5 轮验证通过，见 `docs_ble/24` 24.1。
 
 ## 三、目录结构
 
@@ -145,6 +157,20 @@ nsh> ping -c 3 www.baidu.com
 > 电**。要连续观察请用 `docs_ble/tools/nsh2.py`，或全程只保持一个串口句柄。
 
 首次配对：板子发起连接时 SSP 走 user_confirm 自动接受，手机侧确认即可，不需要输 PIN。
+
+### 5. 和端侧模型对话
+
+```bash
+nsh> ask 打开客厅的灯
+Sent to agent: 打开客厅的灯
+[Agent]: 好的，已为您打开客厅灯
+```
+
+`ask` 是 NSH builtin，把问题投到 agent 的 inbound 队列。云端 LLM 不可用（没配 API key
+就是这种情况）时自动兑底到端侧 velaAI TFLM 模型，当前推理耗时 16～49 s。
+
+> agent 自身的 `vela>` CLI 里也有 `ask`，但那个线程优先级 30、NSH 是 100，两者抢同一个
+> console，NSH 每次都赢——所以要用 builtin 这一个。
 
 ## 五、公共仓改动（重要）
 
