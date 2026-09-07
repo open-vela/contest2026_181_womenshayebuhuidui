@@ -38,8 +38,10 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* Tensor Arena: 主机侧 RecordingMicroInterpreter 实测 37840 字节,
- * 留足余量取 64KB (静态 BSS; 若 SRAM 紧张可改为 PSRAM malloc) */
+/* Tensor Arena: 主机侧 RecordingMicroInterpreter 实测 37840 字节, 留余量取 64KB。
+ * 放在 SRAM 的静态 BSS 里: 解释器每个 token 都要反复读写这块内存, 放 PSRAM
+ * (QSPI) 实测把推理从 ~9 s 拖到 16~49 s。SRAM 能装下是因为把 g_allsyms 那
+ * 107 KB 从 .data 挪回了 flash (见板级 ld.script)。 */
 #ifndef AI_LM_ARENA_SIZE
 #define AI_LM_ARENA_SIZE (64 * 1024)
 #endif
@@ -63,7 +65,7 @@
 
 /* 模型字节 (RODATA, XIP 直接从 Flash 执行, 16 字节对齐; 定义见 model_data.h) */
 
-/* Tensor Arena (BSS; 若 SRAM 紧张可改为 PSRAM malloc) */
+/* Tensor Arena (SRAM BSS, 见上方说明) */
 static uint8_t s_arena[AI_LM_ARENA_SIZE] __attribute__((aligned(16)));
 
 static tflite::MicroInterpreter *s_interp = NULL;
